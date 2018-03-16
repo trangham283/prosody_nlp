@@ -1,0 +1,4 @@
+Most everything in here is a copy of the berkeyley parser analyzer:
+https://github.com/jkkummerfeld/berkeley-parser-analyser/
+
+with minor modifications mainly for debugging
