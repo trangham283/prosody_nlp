@@ -1,10 +1,6 @@
 #!/usr/bin/env python
-# TODO: describe
-# Process PTB tree and MS-State hypothesis tree
-
 from parse_analyzer import render_tree, init, treebanks, parse_errors
-from parse_analyzer import head_finder, tree_transform
-from parse_analyzer import pstree, transform_search
+from parse_analyzer import pstree, transform_search, head_finder, tree_transform
 import sys, argparse, os
 from parse_analyzer.classify_english import classify
 from collections import defaultdict
@@ -16,7 +12,7 @@ import pandas as pd
 
 
 # file with limited human annotation
-ann_df = pd.read_csv('../human-ann.tsv', sep='\t')
+ann_df = pd.read_csv('human-ann.tsv', sep='\t')
 ann_sents = set(ann_df.sent_id)
 
 # replace word by word 
@@ -221,11 +217,11 @@ if __name__ == '__main__':
             help='set true to draw tree')
     pa.add_argument('--rev', type=int, default=1, \
             help='0: transform from MS candidate to PTB; 1: vice versa')
-    pa.add_argument('--turn_file', type=str, default='../2015_B.csv', \
+    pa.add_argument('--turn_file', type=str, default='2015_B.csv', \
             help='csv file with alignment of 1 speaker side')
     pa.add_argument('--sent_id', type=str, default='B30_6', \
             help='sentence id')
-    pa.add_argument('--ms_hypo_dir', type=str, default='../samples',\
+    pa.add_argument('--ms_hypo_dir', type=str, default='samples',\
             help='directory of ms hypotheses')
 
     args = pa.parse_args()
