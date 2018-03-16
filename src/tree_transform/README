@@ -1,0 +1,6 @@
+Scripts for tree conversions from PTB to MS-State...
+
+The helper library parse_analyzer is from Jonathan Kummerfeld:
+https://github.com/jkkummerfeld/berkeley-parser-analyser/
+
+with potentially very minor modifications I did for debugging

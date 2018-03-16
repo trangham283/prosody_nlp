@@ -2,10 +2,11 @@
 # TODO: describe
 # Process PTB tree and MS-State hypothesis tree
 
-import render_tree, init, treebanks, parse_errors, head_finder, tree_transform
-import pstree, transform_search
+from parse_analyzer import render_tree, init, treebanks, parse_errors
+from parse_analyzer import head_finder, tree_transform
+from parse_analyzer import pstree, transform_search
 import sys, argparse, os
-from classify_english import classify
+from parse_analyzer.classify_english import classify
 from collections import defaultdict
 from StringIO import StringIO
 from difflib import SequenceMatcher

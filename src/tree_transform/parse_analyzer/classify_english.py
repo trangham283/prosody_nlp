@@ -172,7 +172,6 @@ def classify(info, gold, test):
 
 
 if __name__ == '__main__':
-	#from transform_search import main
-	from trans_search import main
+	from transform_search import main
 	import sys
 	main(sys.argv, classify)

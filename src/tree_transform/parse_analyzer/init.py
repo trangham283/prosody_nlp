@@ -2,6 +2,9 @@
 # -*- coding: utf-8 -*-
 # vim: set ts=2 sw=2 noet:
 
+# Author: Jonathan Kummerfeld
+# Source: https://github.com/jkkummerfeld/berkeley-parser-analyser/
+
 '''A collection of useful functions at startup.  There are definitely more
 powerful, and flexible, alternatives out there, but this was what I needed at
 the time.'''

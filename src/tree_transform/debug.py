@@ -6,8 +6,8 @@
 
 # %load debug
 import sys
-import render_tree, init, treebanks, parse_errors, head_finder, tree_transform
-import pstree
+from parse_analyzer import render_tree, init, treebanks, parse_errors
+from parse_analyzer import head_finder, tree_transform, pstree
 from collections import defaultdict
 from StringIO import StringIO
 from difflib import SequenceMatcher
