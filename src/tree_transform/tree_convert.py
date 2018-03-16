@@ -47,6 +47,17 @@ def insert_words(ptb_tree, ms_words, i1, i2, j1, j2):
     str_mrg = ['(XX ' + w +')' for w in to_insert]
     mrg = '(X ' + ' '.join(str_mrg) + ' )'
     node_to_add = pstree.tree_from_text(mrg)
+    
+    # i1 = i2 in this case; check if insert at end points
+    # if inserting at endpoints, do merge 
+    if i1 == 0 or i1 == len(ptb_tree.word_yield(as_list=True)):
+        if i1 == 0:
+            ptb_tree = merge_trees(node_to_add, ptb_tree)
+        else:
+            ptb_tree = merge_trees(ptb_tree, node_to_add)
+        return ptb_tree
+
+    # else: inserting in the middle of the sentence
     # adjust span of new node
     for n in node_to_add.get_nodes():
         n.span = (n.span[0] + i1, n.span[1] + i1)
@@ -72,6 +83,7 @@ def insert_words(ptb_tree, ms_words, i1, i2, j1, j2):
     idx = new_parent.subtrees.index(sibling)
     node_to_add.parent.subtrees.insert(idx+1, node_to_add)
     ptb_tree.check_consistency()
+    return ptb_tree
 
 def merge_trees(t1, t2):
     left = treebanks.homogenise_tree(t1)
@@ -121,23 +133,11 @@ def convert_tree(ptb_tree, ms_tree, rev):
             # harder case: replace ptb_words[i1:i2] by ms_words[j1:j2]
             else:
                 delete_words(ptb_tree, i1, i2)
-                insert_words(ptb_tree, ms_words, i1, i2, j1, j2)
+                ptb_tree = insert_words(ptb_tree, ms_words, i1, i2, j1, j2)
         elif tag == 'delete':
             delete_words(ptb_tree, i1, i2)
         else:
-            # tag = insert; i = i2 in this case
-            if i1 == 0 or i1 == len(ptb_words):
-                # inserting at end points
-                to_insert = ms_words[j1:j2]
-                str_mrg = ['(XX ' + w +')' for w in to_insert]
-                mrg = '(X ' + ' '.join(str_mrg) + ' )'
-                node_to_add = pstree.tree_from_text(mrg)
-                if i1 == 0:
-                    ptb_tree = merge_trees(node_to_add, ptb_tree)
-                else:
-                    ptb_tree = merge_trees(ptb_tree, node_to_add)
-            else:
-                insert_words(ptb_tree, ms_words, i1, i2, j1, j2)
+            ptb_tree = insert_words(ptb_tree, ms_words, i1, i2, j1, j2)
         ptb_tree.check_consistency()
 
     # initial "errors" in ms_tree compared to "gold" of ptb_tree
@@ -167,7 +167,7 @@ def gather_output(ptb_mrg, ms_candidates, sent_name_prefix, ms_hypo_dir, \
             ann_mrgs = ann_df[ann_df.sent_id==sent_name_prefix].human_mrg.values
             for i, m in enumerate(ann_mrgs):
                 temp = pstree.tree_from_text("(ROOT" + m[1:])
-                # treebanks.homogenise_tree(temp)
+                treebanks.homogenise_tree(temp)
                 treebanks.remove_function_tags(temp)
                 t = Tree.fromstring(str(temp))
                 sent_name = os.path.join(ms_hypo_dir, sent_name_prefix + '_' + \
