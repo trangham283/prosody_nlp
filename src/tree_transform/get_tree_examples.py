@@ -59,32 +59,6 @@ def unroll_mrg_toks(df_mrg):
     df = pd.DataFrame(list_row)
     return df
 
-def preprocess(args):
-    # df from Penn treebank
-    fmrg = os.path.join(args.project_dir, args.split + '_mrg.tsv')
-    df_mrg_all = pd.read_csv(fmrg, sep='\t')
-    df_mrg_all['speaker'] = df_mrg_all.sent_id.apply(lambda x: x[0])
-    df_mrg_all['file_num'] = df_mrg_all.file_id.apply(lambda x: int(x[2:]))
-    df_mrg = df_mrg_all[(df_mrg_all.file_num == file_num)]
-    #print df_mrg_all.head(2)
-    df_mrg = df_mrg[(df_mrg.speaker == args.speaker)]
-    df_mrg['mrg'] = df_mrg['mrg'].apply(norm_mrg)
-    df_mrg['ptb_word'] = df_mrg['sentence'].apply(get_tokens)
-    df_mrg_unrolled = unroll_mrg_toks(df_mrg)
-
-    # df from MS-State
-    #df_msA = read_ms_file(args.ms_data_dir, file_num, 'A')
-    #df_msB = read_ms_file(args.ms_data_dir, file_num, 'B')
-    #df_ms = pd.concat([df_msA, df_msB])
-    df_ms = read_ms_file(args.ms_data_dir, file_num, args.speaker)
-    df_ms['sent_id'] = df_ms.ptb_id.apply(lambda x: x.replace('.', ''))
-    df_ms['ms_word'] = df_ms.ms_word.apply(norm_laughter)
-    df_ms['ptb_word'] = df_ms.ptb_word.apply(lambda x: x.lower())
-    for other_word in OTHER:
-        df_ms = df_ms[(df_ms.ms_word != other_word)]
-    return df_mrg, df_mrg_unrolled, df_ms
-
-
 def match_idx(info):
     tag, i1, i2, j1, j2 = info
     ms_range = range(i1, i2)
@@ -111,11 +85,45 @@ def match_idx(info):
             else: match.append((k, i2))
     return match
 
-def align_msptb(df_ms, df_mrg):
+def preprocess_mrg(project_dir, split):
+    # df from Penn treebank
+    fmrg = os.path.join(project_dir, split + '_mrg.tsv')
+    df_mrg_all = pd.read_csv(fmrg, sep='\t')
+    df_mrg_all['speaker'] = df_mrg_all.sent_id.apply(lambda x: x[0])
+    df_mrg_all['file_num'] = df_mrg_all.file_id.apply(lambda x: int(x[2:]))
+    #df_mrg = df_mrg_all[(df_mrg_all.file_num == file_num)]
+    #df_mrg = df_mrg[(df_mrg.speaker == speaker)]
+    #df_mrg['mrg'] = df_mrg['mrg'].apply(norm_mrg)
+    #df_mrg['ptb_word'] = df_mrg['sentence'].apply(get_tokens)
+    #df_mrg_unrolled = unroll_mrg_toks(df_mrg)
+    return df_mrg_all
+
+def preprocess_ms(ms_data_dir, file_num, speaker):
+    # df from MS-State
+    #df_msA = read_ms_file(ms_data_dir, file_num, 'A')
+    #df_msB = read_ms_file(ms_data_dir, file_num, 'B')
+    #df_ms = pd.concat([df_msA, df_msB])
+    df_ms = read_ms_file(ms_data_dir, file_num, speaker)
+    df_ms['sent_id'] = df_ms.ptb_id.apply(lambda x: x.replace('.', ''))
+    df_ms['ms_word'] = df_ms.ms_word.apply(norm_laughter)
+    df_ms['ptb_word'] = df_ms.ptb_word.apply(lambda x: x.lower())
+    for other_word in OTHER:
+        df_ms = df_ms[(df_ms.ms_word != other_word)]
+    return df_ms
+
+
+def align_msptb(df_ms, df_mrg_all, file_num, speaker):
+    df_mrg = df_mrg_all[(df_mrg_all.file_num == file_num)]
+    df_mrg = df_mrg[(df_mrg.speaker == speaker)]
+    df_mrg['mrg'] = df_mrg['mrg'].apply(norm_mrg)
+    df_mrg['ptb_word'] = df_mrg['sentence'].apply(get_tokens)
+    #print df_mrg.head(2)
+    df_mrg_unrolled = unroll_mrg_toks(df_mrg)
+
     ms_toks = df_ms.ptb_word.values.copy()
     df_ms['ms_tok_id'] = range(len(ms_toks))
-    ptb_toks = df_mrg.ptb_word.values.copy()
-    df_mrg['ptb_tok_id'] = range(len(ptb_toks))
+    ptb_toks = df_mrg_unrolled.ptb_word.values.copy()
+    df_mrg_unrolled['ptb_tok_id'] = range(len(ptb_toks))
     
     # .get_opcodes returns ops to turn a into b 
     sseq = SequenceMatcher(None, ms_toks, ptb_toks)
@@ -125,18 +133,8 @@ def align_msptb(df_ms, df_mrg):
         ptb2ms.append(match)
     ptb2ms = [item for sublist in ptb2ms for item in sublist]
     ptb2ms = dict(ptb2ms)
-    return ptb2ms   
+    return ptb2ms, df_mrg, df_mrg_unrolled 
                 
-#        if tag != 'equal':
-#            #print ("%7s ms_toks[%d:%d] (%s) ptb_toks[%d:%d] (%s)" % (tag, i1, \
-#            #        i2, ms_toks[i1:i2], j1, j2, ptb_toks[j1:j2]))
-#            df_ms_range = df_ms[(df_ms.tok_id >=i1) & (df_ms.tok_id <=i2)]
-#            mrg_sents = set(df_mrg_unrolled[(df_mrg_unrolled.tok_id >=j1) & \
-#                    (df_mrg_unrolled.tok_id <=j2)].sent_id)
-#            print df_ms_range[['sent_id', 'start_time', 'end_time', \
-#                    'alignment', 'ptb_word', 'token']]
-#            print mrg_sents
-
 def get_error_sents(df):
     df_err = df[df.alignment.isin(ERR)]
     err_sents = set([])
@@ -192,6 +190,7 @@ for k, v in split1_words:
 def clean_up(toks):
     new_toks = []
     for t in toks:
+        t = t.lower()
         if t in tok_map:
             new_toks += tok_map[t]
         else:
@@ -199,83 +198,90 @@ def clean_up(toks):
     return new_toks
 
 if __name__ == '__main__':
-    pa = argparse.ArgumentParser(description='Compare two models')
+    pa = argparse.ArgumentParser(description = \
+            'Get sentence-level examples to parse')
     pa.add_argument('--project_dir', \
             default='/g/ssli/projects/disfluencies/switchboard_data', \
             help='project directory')
     pa.add_argument('--ms_data_dir', \
             default='/s0/ttmt001/speech_parsing/ms_alignment/data/alignments', \
             help='ms data directory')
-    pa.add_argument('--file_num', type=int, default=2005, \
-            help='file number, if aligning only 1 file')
-    pa.add_argument('--speaker', type=str, default='A', \
-            help='speaker, if aligning only 1 file')
     pa.add_argument('--draw_tree', type=bool, default=False, \
             help='set true to draw tree')
     pa.add_argument('--sent_file', type=str, default=None, \
-            help='sentence ID, if aligning only 1 file')
+            help='list of sentence files')
+    pa.add_argument('--out_dir', type=str, default='samples', \
+            help='output directory')
     pa.add_argument('--split', default='train',\
             help='split: dev_test or train')
 
     args = pa.parse_args()
 
-    file_num = args.file_num
     sent_file = args.sent_file
-    speaker = args.speaker
-    df_mrg_orig, df_mrg, df_ms = preprocess(args)
-    #print df_mrg_orig.head(2), df_mrg.head(2), df_ms.head(2)
-    ptb2ms = align_msptb(df_ms, df_mrg)
-   
-    #top_examples = pickle.load(open(args.split + '_top_examples.pickle'))
-    #file_examples = top_examples[file_num]
-    #file_examples = [item for sublist in file_examples for item in sublist]
-    
-    out_name = str(file_num) + '_' + speaker + '.csv'
-    fout = open(out_name, 'w')
-    #file_examples = get_error_sents(df_ms)
+    out_dir = args.out_dir
+
+    df_mrg_all = preprocess_mrg(args.project_dir, args.split)
     file_examples = open(sent_file).readlines()
     file_examples = [x.strip() for x in file_examples]
-    
-    for sent_id in file_examples:
-        sent_name_prefix = str(file_num) + '_' + sent_id.replace('@','')
-        print sent_name_prefix
-        mrg_sents = df_mrg_orig[df_mrg_orig.sent_id == \
-                sent_id.replace('@','')].mrg.values
-        str_sents = df_mrg_orig[df_mrg_orig.sent_id == \
-                sent_id.replace('@','')].sentence.values
-        inter_df = df_mrg[df_mrg.sent_id == sent_id]
-        df_ms_by_tok = df_ms.set_index('ms_tok_id')
-        for tree_id, df_for_tree in inter_df.groupby('tree_id'):
-            f_ms = open('samples/' + sent_name_prefix + '_' + str(tree_id) + \
-                    '.ms', 'w')
-            start_ptb_idx = df_for_tree.ptb_tok_id.min()
-            end_ptb_idx = df_for_tree.ptb_tok_id.max()
-            start_ms_idx = ptb2ms[start_ptb_idx]
-            end_ms_idx = ptb2ms[end_ptb_idx]
-            ms_sent_df = df_ms_by_tok.iloc[start_ms_idx:end_ms_idx+1]
-            ms_toks = ms_sent_df.ms_word.values
-            ms_sent_raw = " ".join(ms_toks)
-            ms_toks = clean_up(ms_toks)
-            ms_sent_clean = " ".join(ms_toks)
-            f_ms.write(ms_sent_clean)
-            print tree_id
-            print "\t", ms_sent_df[['sent_id', 'start_time', 'end_time', \
-                    'alignment', 'ms_word', 'ptb_word']]
-            print
-            item =  sent_name_prefix + '_' + str(tree_id) + "\t" + \
-                    ms_sent_raw + "\t" + ms_sent_clean + "\t" + \
-                    str_sents[tree_id] + "\t" + \
-                    str(ms_sent_df.start_time.min()) + "; " + \
-                    str(ms_sent_df.end_time.max()) + "\t" + \
-                    mrg_sents[tree_id]
-            f_ms.close()
-            fout.write(item + "\n")
-            if args.draw_tree:
-                sent_name = 'samples/' + sent_name_prefix + '_' + \
-                    str(tree_id) + '.ps'
-                t = Tree.fromstring(mrg_sents[tree_id])
-                TreeView(t)._cframe.print_to_file(sent_name)
-    fout.close()
+    file_list = {}
+    for s in file_examples:
+        file_num, turn_id, sent_id = s.split('_')
+        speaker = turn_id[0]
+        if (int(file_num), speaker) not in file_list:
+            file_list[(int(file_num), speaker)] = set([])
+        file_list[(int(file_num), speaker)].add(turn_id)
+    file_set = set(file_list.keys())
+    print file_list
+
+    for file_num, speaker in file_set:
+        print file_num, speaker
+        df_ms = preprocess_ms(args.ms_data_dir, file_num, speaker)
+        ptb2ms, df_mrg, df_mrg_unrolled = align_msptb(df_ms, df_mrg_all, \
+                file_num, speaker)
+        
+        out_name = os.path.join(out_dir, str(file_num) +'_'+ speaker + '.csv')
+        fout = open(out_name, 'w')
+        
+        for sent_id in file_list[(file_num, speaker)]:
+            sent_name_prefix = str(file_num) + '_' + sent_id.replace('@','')
+            print sent_name_prefix
+            mrg_sents = df_mrg[df_mrg.sent_id == \
+                    sent_id.replace('@','')].mrg.values
+            str_sents = df_mrg[df_mrg.sent_id == \
+                    sent_id.replace('@','')].sentence.values
+            inter_df = df_mrg_unrolled[df_mrg_unrolled.sent_id == sent_id]
+            df_ms_by_tok = df_ms.set_index('ms_tok_id')
+            for tree_id, df_for_tree in inter_df.groupby('tree_id'):
+                f_ms = open(os.path.join(out_dir, sent_name_prefix + \
+                        '_' + str(tree_id) + '.ms'), 'w')
+                start_ptb_idx = df_for_tree.ptb_tok_id.min()
+                end_ptb_idx = df_for_tree.ptb_tok_id.max()
+                start_ms_idx = ptb2ms[start_ptb_idx]
+                end_ms_idx = ptb2ms[end_ptb_idx]
+                ms_sent_df = df_ms_by_tok.iloc[start_ms_idx:end_ms_idx+1]
+                ms_toks = ms_sent_df.ms_word.values
+                ms_sent_raw = " ".join(ms_toks)
+                ms_toks = clean_up(ms_toks)
+                ms_sent_clean = " ".join(ms_toks)
+                f_ms.write(ms_sent_clean)
+                print tree_id
+                #print "\t", ms_sent_df[['sent_id', 'start_time', 'end_time', \
+                #        'alignment', 'ms_word', 'ptb_word']]
+                #print
+                item =  sent_name_prefix + '_' + str(tree_id) + "\t" + \
+                        ms_sent_raw + "\t" + ms_sent_clean + "\t" + \
+                        str_sents[tree_id] + "\t" + \
+                        str(ms_sent_df.start_time.min()) + "; " + \
+                        str(ms_sent_df.end_time.max()) + "\t" + \
+                        mrg_sents[tree_id]
+                f_ms.close()
+                fout.write(item + "\n")
+                if args.draw_tree:
+                    sent_name = os.path.join(out_dir, sent_name_prefix + '_' + \
+                        str(tree_id) + '.ps')
+                    t = Tree.fromstring(mrg_sents[tree_id])
+                    TreeView(t)._cframe.print_to_file(sent_name)
+        fout.close()
 
 # columns of .csv file:
 # ['sent_id', 'ms_sent_raw', 'ms_sent_clean', 'ptb_sent', 'times', 'mrg']
