@@ -202,6 +202,7 @@ def gather_output_singles(ptb_mrg, ms_candidates, ms_scores, \
         # Need to reconstruct ptb_tree because changes were made in place
         ptb_tree = pstree.tree_from_text(ptb_mrg)
         ms_tree = pstree.tree_from_text(ms_mrg)
+        sent_len = len(ms_tree.word_yield(as_list=True))
         
         # counts_for_prf(test, gold)
         if sent_name_prefix in ann_sents:
@@ -240,15 +241,52 @@ def gather_output_singles(ptb_mrg, ms_candidates, ms_scores, \
         else:
             print "no path found"
         print >> fout, "\n"
-        item = "{}_{}\t{}\t{}\t{}\t{}".format(sent_name_prefix, i, \
-                ms_scores[i], f23, error_count, iters[-1]) 
+        item = "{}_{}\t{}\t{}\t{}\t{}\t{}".format(sent_name_prefix, i, \
+                ms_scores[i], f23, error_count, iters[-1], sent_len) 
         print >> fcomp, item
     fout.close()
+   
+# FIXME
+def process_pairs(fcompname, sent_file, ms_hypo_dir, out_dir, \
+        draw_tree, rev):
+    file_examples = open(sent_file).readlines()
+    file_examples = [x.strip() for x in file_examples]
+    file_list = {}
+    for s in file_examples:
+        file_num, turn_id, sent_id = s.split('_')
+        speaker = turn_id[0]
+        if (int(file_num), speaker) not in file_list:
+            file_list[(int(file_num), speaker)] = []
+        file_list[(int(file_num), speaker)].append( \
+                "{}_{}".format(turn_id, sent_id))
+    file_set = set(file_list.keys())
+    print file_list
     
+    for file_num, speaker in file_set:
+        turn_file = os.path.join(ms_hypo_dir, \
+                "{}_{}_pairs.txt".format(file_num, speaker))
+
+        for sent_id in file_list[(int(file_num), speaker)]:
+            sent_name_prefix = "{}_{}".format(file_num, sent_id)
+            print sent_name_prefix
+            row = turn_df.loc[sent_name_prefix]
+            ptb_mrg = row.mrg
+            ptb_mrg = "(ROOT"+ ptb_mrg[1:]
+
+            ms_score_file = os.path.join(ms_hypo_dir, sent_name_prefix + \
+                    '.ms.out_with_score')
+            ms_scores = open(ms_score_file).readlines()
+            ms_scores = [x.strip() for x in ms_scores]
+            score_and_sent = [x.split('\t') for x in ms_scores if x]
+            scores = [float(x[0]) for x in score_and_sent]
+            ms_candidates = [x[1] for x in score_and_sent]
+            ms_candidates = ["(ROOT "+ x[1:] for x in ms_candidates]
+
 def process_singles(fcompname, sent_file, ms_hypo_dir, out_dir, \
         draw_tree, rev):
     fcomp = open(fcompname, 'w')
-    print >> fcomp, "sent_id\ttree_score\tf1_ms_vs_human\tinit_errors\titers"
+    print >> fcomp, \
+            "sent_id\ttree_score\tf1_ms_vs_human\tinit_errors\titers\tsent_len"
     
     # columns of .csv file (previously in something like samples/3727_B.csv):
     #cols = ['sent_id', 'ms_sent_raw', 'ms_sent_clean', 'ptb_sent', 'times', \
@@ -315,6 +353,8 @@ if __name__ == '__main__':
             help='directory to dump output to')
     pa.add_argument('--fcompname', type=str, default='debug.tsv',\
             help='file to collect results')
+    pa.add_argument('--sent_type', type=int, default=1,\
+            help='single-sentence errors (1) or split/merge errors (2)')
 
     # previously both ms_hypo_dir and out_dir were "samples"
     args = pa.parse_args()
@@ -324,7 +364,16 @@ if __name__ == '__main__':
     ms_hypo_dir = args.ms_hypo_dir
     out_dir = args.out_dir
     fcompname = args.fcompname
+    sent_type = args.sent_type
 
-    process_singles(fcompname, sent_file, ms_hypo_dir, out_dir, draw_tree, rev)
-    # process_pairs()
+    if sent_type not in [1, 2]:
+        print "Must be of type 1 or 2"
+        exit(1)
+
+    if sent_type == 1:
+        process_singles(fcompname, sent_file, ms_hypo_dir, out_dir, \
+                draw_tree, rev)
+    else:
+        process_pairs(fcompname, sent_file, ms_hypo_dir, out_dir, \
+                draw_tree, rev)
 

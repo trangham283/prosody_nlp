@@ -266,11 +266,12 @@ def make_key(s_list):
         i += 1
     return rep
 
-def process_pairs(all_pairs,df_dff,df_ptb,df_ms,file_num,speaker,out_dir):
+def process_pairs(all_pairs, df_dff, df_ptb,df_ms, file_num, speaker, \
+        out_dir):
     out_name = os.path.join(out_dir, str(file_num) +'_'+ speaker + \
-            '_pairs.txt')
-    
+        '_pairs.txt')
     fout = open(out_name, 'w')
+    
     df_dff = df_dff.set_index(['turn', 'sent_num'])
     df_ptb = df_ptb.set_index(['turn', 'sent_num'])
     df_ms = df_ms.set_index('uw_tok_id')
@@ -320,6 +321,54 @@ def process_pairs(all_pairs,df_dff,df_ptb,df_ms,file_num,speaker,out_dir):
         print >> fout, item
 
     fout.close()
+
+def process_pairs_pickle(all_pairs, df_dff, df_ptb,df_ms, file_num, speaker, \
+        out_dir):
+    out_name = os.path.join(out_dir, str(file_num) +'_'+ speaker + \
+            '_pairs.pickle')
+    
+    data = {}
+    data['pairs'] = all_pairs
+    data['ms_sents'] = {}
+    data['ptb_sents'] = {}
+    df_dff = df_dff.set_index(['turn', 'sent_num'])
+    df_ptb = df_ptb.set_index(['turn', 'sent_num'])
+    df_ms = df_ms.set_index('uw_tok_id')
+    
+    ms_sents_set = set([])
+    mrg_sents_set = set([])
+    for ms_sents, mrg_sents in all_pairs:
+        item = str(ms_sents) + "\t" + str(mrg_sents)
+        ms_sents_set = ms_sents_set.union(set(ms_sents))
+        mrg_sents_set = mrg_sents_set.union(set(mrg_sents))
+
+    for turn, sent_num in sorted(ms_sents_set):
+        sent_id = "{}_{}{}_{}".format(file_num, speaker, turn, sent_num)
+        ms_sent = ' '.join(clean_up(df_dff.loc[turn, sent_num].ms_tokens))
+        ann = df_dff.loc[turn, sent_num].comb_ann
+        tok_ids = make_list(df_dff.loc[turn, sent_num].ms_tok_id)
+        if not tok_ids: 
+            tok_ids = make_list(df_dff.loc[turn, sent_num].ptb_tok_id)
+        if not tok_ids: 
+            # must be an empty sentence:
+            print "Empty sentence: ", sent_id
+            continue
+        start_tok = '_'.join(tok_ids[0].split('_')[:2])
+        end_tok = '_'.join(tok_ids[-1].split('_')[:2])
+        start_time = df_ms.loc[start_tok].start_time
+        end_time = df_ms.loc[end_tok].end_time
+                
+        item = (ms_sent, ann, start_time, end_time)
+        data['ms_sents'][sent_id] = item
+    
+    for turn, sent_num in sorted(mrg_sents_set):
+        sent_id = "{}_{}{}_{}".format(file_num, speaker, turn, sent_num)
+        ptb_sent = ' '.join(df_ptb.loc[turn, sent_num].ptb_tokens)
+        ptb_parse = df_ptb.loc[turn, sent_num].mrg
+        item = (ptb_sent, ptb_parse)           
+        data['ptb_sents'][sent_id] = item
+
+    pickle.dump(data, open(out_name, 'w'))
 
 
 def process_singles(all_singles,df_dff,df_ptb,df_ms,file_num,speaker,out_dir):
@@ -387,6 +436,9 @@ if __name__ == '__main__':
     pa.add_argument('--out_dir', type=str, \
             default='/s0/ttmt001/speech_parsing/prosodic-anomalies', \
             help='output directory')
+    pa.add_argument('--pickle_only', type=int, \
+            default=1, \
+            help='(1) if only processing pairs and dump pickle or (0) for all')
 
     args = pa.parse_args()
 
@@ -397,6 +449,7 @@ if __name__ == '__main__':
     comb_suffix = args.comb_suffix
     ms_dir_midfix = args.ms_dir_midfix
     file_num = args.file_num
+    pickle_only = args.pickle_only
 
     #df_mrg_all = preprocess_mrg(project_dir, split, ptb_suffix)
     df_mrg_train = preprocess_mrg(project_dir, 'train', ptb_suffix)
@@ -408,11 +461,10 @@ if __name__ == '__main__':
     common_files = mrg_files.intersection(dff_files)
 
     if file_num == 0:
-        #for file_num in sorted(common_files):
+        for file_num in sorted(common_files):
             # partially processed files case
             #if file_num <= 4617: continue
-        for file_num in [4103, 4108, 4171, 4329, 4617]:
-            
+        #for file_num in [4103, 4108, 4171, 4329, 4617]:
             for speaker in ['A', 'B']:
                 print file_num, speaker
                 all_pairs, all_singles, df_dff, df_ptb = align_dfs(df_mrg_all,\
@@ -422,13 +474,19 @@ if __name__ == '__main__':
                 if not all_singles:
                     print "No single-sent errors!", file_num, speaker
                 else:
-                    process_singles(all_singles, df_dff, df_ptb, df_ms, \
+                    if not pickle_only:
+                        process_singles(all_singles, df_dff, df_ptb, df_ms, \
                             file_num, speaker, out_dir)
                 if not all_pairs:
                     print "No pair-sent errors!", file_num, speaker
                 else:
-                    process_pairs(all_pairs, df_dff, df_ptb, df_ms, file_num, \
-                            speaker, out_dir)
+                    if not pickle_only:
+                        process_pairs(all_pairs, df_dff, df_ptb, df_ms, \
+                                file_num, speaker, out_dir)
+                    else:
+                        process_pairs_pickle(all_pairs, df_dff, df_ptb, df_ms,\
+                                file_num, speaker, out_dir)
+
     
     else:
         for speaker in ['A', 'B']:
@@ -441,12 +499,18 @@ if __name__ == '__main__':
             if not all_singles:
                 print "No single-sent errors!", file_num, speaker
             else:
-                process_singles(all_singles, df_dff, df_ptb, df_ms, file_num, \
-                        speaker, out_dir)
+                if not pickle_only:
+                    process_singles(all_singles, df_dff, df_ptb, df_ms, \
+                            file_num, speaker, out_dir)
             if not all_pairs:
                 print "No pair-sent errors!", file_num, speaker
             else:
-                process_pairs(all_pairs, df_dff, df_ptb, df_ms, file_num, \
+                if not pickle_only:
+                    process_pairs(all_pairs, df_dff, df_ptb, df_ms, file_num, \
                         speaker, out_dir)
+                else:
+                    process_pairs_pickle(all_pairs, df_dff, df_ptb, df_ms, \
+                            file_num, speaker, out_dir)
+
 
     
