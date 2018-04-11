@@ -1,0 +1,54 @@
+# Update 4/6/2018
+
+# Step 1: Produce sentence alignments by tokens and ms sentences
+# prep for ALL files
+python get_tree_examples_with_alignments.py --file_num 0
+
+# OR for individual files
+python get_tree_examples_with_alignments.py --file_num 2005
+
+# This produces:
+  - fileNum_{A,B}_pairs.txt: file with sentences with different boudary issues:
+    + first few lines show alignment of sentences MS-PTB pairs
+    + Under MS_sents: sent_id, ms_sent, comb_ann, times
+    + Under PTB sents: sent_id, ptb_sent, ptb_parse (mrg)
+  - fileNum_{A,B}_singles.tsv: files with sentences that have within-sentence
+    transcript issues (potentially). This is tsv with columns: 
+    [sent_id, ms_sent, ptb_sent, comb_ann, times, mrg]
+    These sentences essentially have the same sent_id between MS-State,
+    PTB parse, and PTB disfluency annotation sentences, but there are 
+    transcription errors
+  - fileNum_{A,B}turn_sentNum.ms: single-sentence files to facilitate running 
+    a separate parser directly on these files, which then produces k-best 
+    parse hypotheses (Step 2)
+
+# Step 2: Create parse candidates for ms sentences
+# (change data directory to point to folder with outputs of Step 1)
+./run_bkparser_all.sh
+
+OR 
+
+./bkparse_wrapper.sh with modified input file in "SENT_FILE"
+
+
+# Step 3: convert/analyze trees
+python tree_convert.py \
+           --ms_hypo_dir <DIR_TO_MS_PARSES> \
+           --out_dir <DIR_TO_DUMP_OUTPUT> \
+           --sent_file debug-sents-train.txt \
+           --fcompname debug-sents-train-k10-updated.tsv \
+           --draw_tree {1,0}
+
+
+############################################################
+
+# Produce sentence alignments by tokens and ms sentences
+python get_tree_examples.py --sent_file human-sents-train.txt
+
+# Create parse candidates for ms sentences
+./bkparse_wrapper.sh
+
+# Perform tree transform and evaluate/analyze
+python tree_convert.py \
+    --sent_file debug-sents-train.txt \
+    --fcompname debug-sents-train-k10.tsv

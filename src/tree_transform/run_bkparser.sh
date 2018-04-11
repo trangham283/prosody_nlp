@@ -1,11 +1,12 @@
 #!/bin/bash
 
-#DATA_DIR=/homes/ttmt001/transitory/seq2seq_parser/data
+DATA_DIR=/s0/ttmt001/speech_parsing/prosodic-anomalies
+#DATA_DIR=/homes/ttmt001/transitory/prosodic-anomalies/samples
 #FILE_ID="4608_A"
 FILE_ID=$1
-TEST_FILE=samples/${FILE_ID}.ms
-OUT_FILE=samples/${FILE_ID}.ms.out_with_score
-PRED_FILE=samples/${FILE_ID}.ms.bkout
+TEST_FILE=${DATA_DIR}/${FILE_ID}.ms
+OUT_FILE=${DATA_DIR}/${FILE_ID}.ms.out_with_score
+PRED_FILE=${DATA_DIR}/${FILE_ID}.ms.bkout
 PARSER_DIR=/homes/ttmt001/transitory/seq2seq_parser/berkeley-parser-analyser/berkeley_parser
 
 java -client -jar $PARSER_DIR/BerkeleyParser-1.7.jar \

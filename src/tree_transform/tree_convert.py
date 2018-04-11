@@ -12,6 +12,8 @@ import pandas as pd
 
 
 # file with limited human annotation
+# this has at least the following columns:
+# [sent_id, human_mrg]
 ann_df = pd.read_csv('human-ann.tsv', sep='\t')
 ann_sents = set(ann_df.sent_id)
 
@@ -162,8 +164,8 @@ def convert_tree(ptb_tree, ms_tree, rev):
     # find transformation from ms_tree to ptb_tree
     return init_errors, iters, path, ptb_tree, f12
 
-def gather_output(ptb_mrg, ms_candidates, ms_scores, sent_name_prefix, \
-        ms_hypo_dir, out_dir, draw_tree, rev, fcomp):
+def gather_output_singles(ptb_mrg, ms_candidates, ms_scores, \
+        sent_name_prefix, ms_hypo_dir, out_dir, draw_tree, rev, fcomp):
     
     if rev:
         fout = open(os.path.join(out_dir, sent_name_prefix + '.out_rev'), 'w')
@@ -242,42 +244,17 @@ def gather_output(ptb_mrg, ms_candidates, ms_scores, sent_name_prefix, \
                 ms_scores[i], f23, error_count, iters[-1]) 
         print >> fcomp, item
     fout.close()
-
-
-if __name__ == '__main__':
-    pa = argparse.ArgumentParser(description = \
-            'Perform tree transformations and analyze')
-    pa.add_argument('--draw_tree', type=int, default=0, \
-            help='set true to draw tree')
-    pa.add_argument('--rev', type=int, default=1, \
-            help='0: transform from MS candidate to PTB; 1: vice versa')
-    pa.add_argument('--sent_file', type=str, default='debug-sents-small.txt', \
-            help='list of sentences to analyze')
-#    pa.add_argument('--turn_file', type=str, default='2015_B.csv', \
-#            help='csv file with alignment of 1 speaker side')
-#    pa.add_argument('--sent_id', type=str, default='B30_6', \
-#            help='sentence id')
-    pa.add_argument('--ms_hypo_dir', type=str, default='samples',\
-            help='directory of ms hypotheses')
-    pa.add_argument('--out_dir', type=str, default='samples',\
-            help='directory to dump output to')
-    pa.add_argument('--fcompname', type=str, default='debug.tsv',\
-            help='file to collect results')
-
-    args = pa.parse_args()
-    draw_tree = bool(args.draw_tree)
-    rev = bool(args.rev)
-    #turn_file = args.turn_file
-    #sent_id = args.sent_id
-    sent_file = args.sent_file
-    ms_hypo_dir = args.ms_hypo_dir
-    out_dir = args.out_dir
-    fcompname = args.fcompname
+    
+def process_singles(fcompname, sent_file, ms_hypo_dir, out_dir, \
+        draw_tree, rev):
     fcomp = open(fcompname, 'w')
     print >> fcomp, "sent_id\ttree_score\tf1_ms_vs_human\tinit_errors\titers"
     
-    # columns of .csv file:
-    cols = ['sent_id', 'ms_sent_raw', 'ms_sent_clean', 'ptb_sent', 'times', \
+    # columns of .csv file (previously in something like samples/3727_B.csv):
+    #cols = ['sent_id', 'ms_sent_raw', 'ms_sent_clean', 'ptb_sent', 'times', \
+    #        'mrg']
+    # columns of .tsv file (singles for now):
+    cols = ['sent_id', 'ms_sent', 'ptb_sent', 'comb_ann', 'times', \
             'mrg']
     file_examples = open(sent_file).readlines()
     file_examples = [x.strip() for x in file_examples]
@@ -293,8 +270,10 @@ if __name__ == '__main__':
     print file_list
 
     for file_num, speaker in file_set:
+        #turn_file = os.path.join(ms_hypo_dir, \
+        #        "{}_{}.csv".format(file_num, speaker))
         turn_file = os.path.join(ms_hypo_dir, \
-                "{}_{}.csv".format(file_num, speaker))
+                "{}_{}_singles.tsv".format(file_num, speaker))
         turn_df = pd.read_csv(turn_file, names=cols, sep='\t')
         turn_df = turn_df.set_index('sent_id')
         for sent_id in file_list[(int(file_num), speaker)]:
@@ -313,9 +292,39 @@ if __name__ == '__main__':
             ms_candidates = [x[1] for x in score_and_sent]
             ms_candidates = ["(ROOT "+ x[1:] for x in ms_candidates]
 
-            gather_output(ptb_mrg, ms_candidates, scores, \
+            gather_output_singles(ptb_mrg, ms_candidates, scores, \
                     sent_name_prefix, ms_hypo_dir, out_dir, \
                     draw_tree, rev, fcomp)
     fcomp.close()
 
+
+if __name__ == '__main__':
+    pa = argparse.ArgumentParser(description = \
+            'Perform tree transformations and analyze')
+    pa.add_argument('--draw_tree', type=int, default=0, \
+            help='set true to draw tree')
+    pa.add_argument('--rev', type=int, default=1, \
+            help='0: transform from MS candidate to PTB; 1: vice versa')
+    pa.add_argument('--sent_file', type=str, default='debug-sents-small.txt', \
+            help='list of sentences to analyze')
+    pa.add_argument('--ms_hypo_dir', type=str, \
+            default='/s0/ttmt001/speech_parsing/prosodic-anomalies',\
+            help='directory of ms hypotheses')
+    pa.add_argument('--out_dir', type=str, \
+            default='/s0/ttmt001/speech_parsing/prosodic-anomalies/tree_out',\
+            help='directory to dump output to')
+    pa.add_argument('--fcompname', type=str, default='debug.tsv',\
+            help='file to collect results')
+
+    # previously both ms_hypo_dir and out_dir were "samples"
+    args = pa.parse_args()
+    draw_tree = bool(args.draw_tree)
+    rev = bool(args.rev)
+    sent_file = args.sent_file
+    ms_hypo_dir = args.ms_hypo_dir
+    out_dir = args.out_dir
+    fcompname = args.fcompname
+
+    process_singles(fcompname, sent_file, ms_hypo_dir, out_dir, draw_tree, rev)
+    # process_pairs()
 
