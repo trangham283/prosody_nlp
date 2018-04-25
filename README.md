@@ -1,5 +1,5 @@
 # prosody_nlp
-Cleaner version, with anything prosody-related
+Cleaned up scripts of misc prosody/parsing-related projects
 
 TODO:
 - data preprocessing stuff
