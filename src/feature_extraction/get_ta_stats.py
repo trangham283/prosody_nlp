@@ -66,7 +66,8 @@ def need_split(word):
         if temp_splits[1] in split1_tails:
             return True
         if temp_splits[1] in split2_tails and temp_splits[0][-1]=='n':
-            return True
+            if word not in ["-n't", "n't"]: 
+                return True
     return False
 
 # Clean MS token to have "written" form

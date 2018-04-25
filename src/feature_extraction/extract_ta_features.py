@@ -77,7 +77,8 @@ def need_split(word):
         if temp_splits[1] in split1_tails:
             return True
         if temp_splits[1] in split2_tails and temp_splits[0][-1]=='n':
-            return True
+            if word not in ["-n't", "n't"]: 
+                return True
     return False
 
 # Clean MS token to have "written" form
@@ -408,8 +409,8 @@ if __name__ == '__main__':
             file_id = int(fname[:-1])
             # if file_id in skip_files: continue
             # continuing after some bugs...
-            #if file_id <= 4000:
-            #    continue
+            if file_id <= 3442:
+                continue
             speaker = fname[-1]
             print file_id, speaker
             extract_features(file_id, speaker, data_dir, output_dir, \

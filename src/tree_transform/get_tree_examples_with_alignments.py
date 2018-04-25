@@ -408,7 +408,7 @@ def process_singles(all_singles,df_dff,df_ptb,df_ms,file_num,speaker,out_dir):
                 'ms_sent': ms_sent, \
                 'ptb_sent': ptb_sent, \
                 'comb_ann': ann, \
-                'times': "{};{}".format(start_time, end_time), \
+                'times': "{0};{1}".format(start_time, end_time), \
                 'mrg': ptb_parse})
     out_df = pd.DataFrame(list_row)
     out_df.to_csv(out_name, sep='\t', index=False, header=True, \

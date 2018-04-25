@@ -1,6 +1,10 @@
 # Update 4/6/2018
 
 # Step 1: Produce sentence alignments by tokens and ms sentences
+# 1a: get single-sentence error alignments (i.e. matching in 
+# slash unit boundaries, but might have INS/DEL/SUB errors on 
+# word-level) + temporary alignments for boundary mismatches
+
 # prep for ALL files
 python get_tree_examples_with_alignments.py --file_num 0
 
@@ -22,6 +26,15 @@ python get_tree_examples_with_alignments.py --file_num 2005
     a separate parser directly on these files, which then produces k-best 
     parse hypotheses (Step 2)
 
+# 1b: merge then split sentences in different sides of boundary mismatches,
+# to produce similar file to *_singles.tsv, so that Step 3 can be done
+# in the same way
+python pairs_to_singles.py --file_num 2005 --speaker A
+
+# This produces file: 2005_A_updated_pairs.tsv, which has the same format/
+# columns as 2005_A_singles.tsv, but ptb_sent and mrg fields are actually the
+# intermediate trees, not the original from treebank.
+
 # Step 2: Create parse candidates for ms sentences
 # (change data directory to point to folder with outputs of Step 1)
 ./run_bkparser_all.sh
@@ -30,9 +43,8 @@ OR
 
 ./bkparse_wrapper.sh with modified input file in "SENT_FILE"
 
-
 # Step 3: convert/analyze trees
-python tree_convert.py \
+python convert_and_analyze_trees.py \
            --ms_hypo_dir <DIR_TO_MS_PARSES> \
            --out_dir <DIR_TO_DUMP_OUTPUT> \
            --sent_file debug-sents-train.txt \
@@ -40,8 +52,12 @@ python tree_convert.py \
            --draw_tree {1,0}
 
 
-############################################################
 
+
+
+
+############################################################
+# OLD STUFF
 # Produce sentence alignments by tokens and ms sentences
 python get_tree_examples.py --sent_file human-sents-train.txt
 
