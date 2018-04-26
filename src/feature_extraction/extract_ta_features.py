@@ -21,7 +21,7 @@ fixed_word_length = 100
 feat_dim = 6
 fbank_dim = 41
 
-split1_tails = ["ll", "m", "re", "ve", "s"]
+split1_tails = ["ll", "m", "re", "ve", "s", "d"]
 split2_tails = ["t"]
 
 # split2 words: ending lasts 2 phones
@@ -29,7 +29,8 @@ split2_tails = ["t"]
 split2_info = {
         "y'all": ["y", "all"],
         "gonna": ["gon", "na"],
-        "wanna": ["wan", "na"]
+        "wanna": ["wan", "na"],
+        "gotta": ["got", "ta"]
         }
 
 # split3 words: ending lasts 3 phones
@@ -407,10 +408,9 @@ if __name__ == '__main__':
         for in_file in all_files:
             fname = os.path.basename(in_file).split('.')[0].split('_')[-1][2:]
             file_id = int(fname[:-1])
-            # if file_id in skip_files: continue
             # continuing after some bugs...
-            if file_id <= 3442:
-                continue
+            #if file_id in skip_files: continue
+            #if file_id <= 3442: continue
             speaker = fname[-1]
             print file_id, speaker
             extract_features(file_id, speaker, data_dir, output_dir, \

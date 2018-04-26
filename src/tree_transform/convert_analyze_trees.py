@@ -182,10 +182,10 @@ if __name__ == '__main__':
     pa.add_argument('--rev', type=int, default=1, \
             help='0: transform from MS candidate to PTB; 1: vice versa')
     pa.add_argument('--ms_hypo_dir', type=str, \
-            default='/s0/ttmt001/speech_parsing/prosodic-anomalies',\
+            default='/s0/ttmt001/speech_parsing/ms_ptb_info',\
             help='directory of ms hypotheses')
     pa.add_argument('--out_dir', type=str, \
-            default='/s0/ttmt001/speech_parsing/prosodic-anomalies/tree_out',\
+            default='/s0/ttmt001/speech_parsing/ms_ptb_tree_out',\
             help='directory to dump output to')
     pa.add_argument('--ps_suffix', type=str, default='updated_pairs', \
             help='suffix of paired files: singles OR updated_pairs')

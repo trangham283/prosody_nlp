@@ -8,7 +8,7 @@ import collections
 import numpy as np
 import cPickle as pickle
 
-split1_tails = ["ll", "m", "re", "ve", "s"]
+split1_tails = ["ll", "m", "re", "ve", "s", "d"]
 split2_tails = ["t"]
 
 # split2 words: ending lasts 2 phones
@@ -16,7 +16,8 @@ split2_tails = ["t"]
 split2_info = {
         "y'all": ["y", "all"],
         "gonna": ["gon", "na"],
-        "wanna": ["wan", "na"]
+        "wanna": ["wan", "na"],
+        "gotta": ["got", "ta"]
         }
 
 # split3 words: ending lasts 3 phones
@@ -120,7 +121,7 @@ def get_data_stats(data_dir, stat_dir):
                 if phone_dur > 0:
                     phone_dict[p].append(phone_dur)
             if need_split(word):
-                print f, k, raw_word, word
+                #print f, k, raw_word, word
                 h_id, h_time, t_id, t_time = process_head_tail_cases(info)
                 if h_id not in head_dict: head_dict[h_id] = []
                 if h_time > 0: head_dict[h_id].append(h_time)
