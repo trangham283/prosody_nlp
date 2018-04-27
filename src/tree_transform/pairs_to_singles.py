@@ -134,10 +134,20 @@ def align_pairs(file_num, speaker, ms_hypo_dir):
     # note that temp trees here already have "(ROOT ..."
     return temp_mrg, data
 
+def sort_keys(my_list):
+    new_list = []
+    for a in my_list:
+        turn = int(a.split('_')[1][1:])
+        sent_num = int(a.split('_')[2])
+        new_list.append([a, (turn, sent_num)])
+    sorted_keys = sorted(new_list, key=lambda x: x[1])
+    sorted_keys = [x[0] for x in sorted_keys]
+    return sorted_keys
+
 def write_output(temp_mrg, data, out_name):
     # sent_id ms_sent ptb_sent    comb_ann    times   mrg
     list_row = []
-    for k in temp_mrg.keys():
+    for k in sort_keys(temp_mrg.keys()):
         ms_sent = data['ms_sents'][k][0]
         ptb_sent = ' '.join(temp_mrg[k].word_yield(as_list=True)) 
         comb_ann = data['ms_sents'][k][1]
@@ -193,7 +203,7 @@ if __name__ == '__main__':
             fname = os.path.basename(f).split('_')
             file_num = int(fname[0])
             # skip done files
-            if file_num not in todo: continue
+            #if file_num not in todo: continue
             speaker = fname[1]
             print file_num, speaker
             try:
@@ -204,7 +214,4 @@ if __name__ == '__main__':
             except:
                 print "Couldn't process file", file_num, speaker
                 continue
-
-
-
 
