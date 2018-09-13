@@ -16,7 +16,7 @@ class FScore(object):
         return "(Recall={:.2f}, Precision={:.2f}, FScore={:.2f})".format(
             self.recall, self.precision, self.fscore)
 
-def evalb(evalb_dir, gold_trees, predicted_trees, ref_gold_path=None):
+def evalb(evalb_dir, gold_trees, predicted_trees, ref_gold_path=None, is_train=True):
     assert os.path.exists(evalb_dir)
     evalb_program_path = os.path.join(evalb_dir, "evalb")
     evalb_spmrl_program_path = os.path.join(evalb_dir, "evalb_spmrl")
@@ -30,6 +30,9 @@ def evalb(evalb_dir, gold_trees, predicted_trees, ref_gold_path=None):
 
     assert os.path.exists(evalb_program_path)
     assert os.path.exists(evalb_param_path)
+    
+    temp_dir = tempfile.TemporaryDirectory(prefix="evalb-")
+    print("Temporary dir", temp_dir)
 
     assert len(gold_trees) == len(predicted_trees)
     for gold_tree, predicted_tree in zip(gold_trees, predicted_trees):
@@ -42,7 +45,6 @@ def evalb(evalb_dir, gold_trees, predicted_trees, ref_gold_path=None):
             gold_leaf.word == predicted_leaf.word
             for gold_leaf, predicted_leaf in zip(gold_leaves, predicted_leaves))
 
-    temp_dir = tempfile.TemporaryDirectory(prefix="evalb-")
     gold_path = os.path.join(temp_dir.name, "gold.txt")
     predicted_path = os.path.join(temp_dir.name, "predicted.txt")
     output_path = os.path.join(temp_dir.name, "output.txt")
@@ -93,6 +95,7 @@ def evalb(evalb_dir, gold_trees, predicted_trees, ref_gold_path=None):
 
     if success:
         temp_dir.cleanup()
+        print("Successfully parsed in:", predicted_path)
     else:
         print("Error reading EVALB results.")
         print("Gold path: {}".format(gold_path))

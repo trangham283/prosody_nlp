@@ -7,6 +7,7 @@ import torch.nn as nn
 import torch.nn.init as init
 
 use_cuda = torch.cuda.is_available()
+#use_cuda = False
 if use_cuda:
     torch_t = torch.cuda
     def from_numpy(ndarray):
@@ -46,7 +47,6 @@ class BatchIndices:
         self.batch_idxs_np = batch_idxs_np
         # Note that the torch copy will be on GPU if use_cuda is set
         self.batch_idxs_torch = from_numpy(batch_idxs_np)
-
         self.batch_size = int(1 + np.max(batch_idxs_np))
 
         batch_idxs_np_extra = np.concatenate([[-1], batch_idxs_np, [-1]])
@@ -663,8 +663,8 @@ class Encoder(nn.Module):
                         relu_dropout=relu_dropout, \
                         residual_dropout=residual_dropout)
 
-            self.add_module(f"attn_{i}", attn)
-            self.add_module(f"ff_{i}", ff)
+            self.add_module("attn_{}".format(i), attn)
+            self.add_module("ff_{}".format(i), ff)
             self.stacks.append((attn, ff))
 
         self.num_layers_position_only = num_layers_position_only
@@ -772,8 +772,8 @@ class NKChartParser(nn.Module):
                 )
         elif hparams.use_elmo:
             self.elmo = get_elmo_class()(
-                options_file="data/elmo_2x4096_512_2048cnn_2xhighway_options.json",
-                weight_file="data/elmo_2x4096_512_2048cnn_2xhighway_weights.hdf5",
+                options_file="/homes/ttmt001/transitory/self-attentive-parser/data/elmo_2x4096_512_2048cnn_2xhighway_options.json",
+                weight_file="/homes/ttmt001/transitory/self-attentive-parser/data/elmo_2x4096_512_2048cnn_2xhighway_weights.hdf5",
                 num_output_representations=1,
                 requires_grad=False,
                 do_layer_norm=False,
@@ -1027,6 +1027,757 @@ class NKChartParser(nn.Module):
             # Apply projection to match dimensionality
             extra_content_annotations = self.project_elmo(
                     elmo_annotations_packed)
+
+        annotations, _ = self.encoder(emb_idxs, batch_idxs, 
+                extra_content_annotations=extra_content_annotations)
+
+        if self.partitioned:
+            # Rearrange the annotations to ensure that the transition to
+            # fenceposts captures an even split between position and content.
+            # TODO(nikita): try alternatives, such as omitting position entirely
+            annotations = torch.cat([
+                annotations[:, 0::2],
+                annotations[:, 1::2],
+            ], 1)
+
+        fencepost_annotations = torch.cat([
+            annotations[:-1, :self.d_model//2],
+            annotations[1:, self.d_model//2:],
+            ], 1)
+        # Note that the subtraction above creates fenceposts at sentence
+        # boundaries, which are not used by our parser. Hence subtract 1
+        # when creating fp_endpoints
+        fp_startpoints = batch_idxs.boundaries_np[:-1]
+        fp_endpoints = batch_idxs.boundaries_np[1:] - 1
+
+        # Just return the charts, for ensembling
+        if return_label_scores_charts:
+            charts = []
+            for i, (start, end) in enumerate(zip(fp_startpoints, fp_endpoints)):
+                chart = self.label_scores_from_annotations(
+                        fencepost_annotations[start:end,:])
+                charts.append(chart.cpu().data.numpy())
+            return charts
+
+        if not is_train:
+            trees = []
+            scores = []
+            for i, (start, end) in enumerate(zip(fp_startpoints, fp_endpoints)):
+                tree, score = self.parse_from_annotations(
+                    fencepost_annotations[start:end,:], sentences[i], golds[i])
+                trees.append(tree)
+                scores.append(score)
+            return trees, scores
+
+        # During training time, the forward pass needs to be computed for every
+        # cell of the chart, but the backward pass only needs to be computed for
+        # cells in either the predicted or the gold parse tree. It's slightly
+        # faster to duplicate the forward pass for a subset of the chart than it
+        # is to perform a backward pass that doesn't take advantage of sparsity.
+        # Since this code is not undergoing algorithmic changes, it makes sense
+        # to include the optimization even though it may only be a 10% speedup.
+        # Note that no dropout occurs in the label portion of the network
+        pis = []
+        pjs = []
+        plabels = []
+        paugment_total = 0.0
+        num_p = 0
+        gis = []
+        gjs = []
+        glabels = []
+        fencepost_annotations_d = fencepost_annotations.detach()
+        #fencepost_annotations_d.volatile = True
+        for i, (start, end) in enumerate(zip(fp_startpoints, fp_endpoints)):
+            p_i, p_j, p_label, p_augment, g_i, g_j, g_label = \
+                self.parse_from_annotations(\
+                fencepost_annotations_d[start:end,:], sentences[i], golds[i])
+            paugment_total += p_augment
+            num_p += p_i.shape[0]
+            pis.append(p_i + start)
+            pjs.append(p_j + start)
+            gis.append(g_i + start)
+            gjs.append(g_j + start)
+            plabels.append(p_label)
+            glabels.append(g_label)
+
+        cells_i = from_numpy(np.concatenate(pis + gis))
+        cells_j = from_numpy(np.concatenate(pjs + gjs))
+        cells_label = from_numpy(np.concatenate(plabels + glabels))
+
+        cells_label_scores = self.f_label(fencepost_annotations[cells_j] \
+                - fencepost_annotations[cells_i])
+        # Got rid of Variable here
+        cells_label_scores = torch.cat([
+                torch_t.FloatTensor(cells_label_scores.size(0), 1).fill_(0),
+                cells_label_scores
+                ], 1)
+        cells_scores = torch.gather(cells_label_scores, 1, cells_label[:, None])
+        loss = cells_scores[:num_p].sum() - cells_scores[num_p:].sum() \
+                + paugment_total
+        return None, loss
+
+    def label_scores_from_annotations(self, fencepost_annotations):
+        # Note that the bias added to the final layer norm is useless because
+        # this subtraction gets rid of it
+        span_features = (torch.unsqueeze(fencepost_annotations, 0)
+                         - torch.unsqueeze(fencepost_annotations, 1))
+
+        label_scores_chart = self.f_label(span_features)
+        # Got rid of Variable here
+        label_scores_chart = torch.cat([
+            torch_t.FloatTensor(label_scores_chart.size(0), \
+                    label_scores_chart.size(1), 1).fill_(0),
+            label_scores_chart
+            ], 2)
+        return label_scores_chart
+
+    def parse_from_annotations(self, fencepost_annotations,sentence, gold=None):
+        is_train = gold is not None
+        label_scores_chart = self.label_scores_from_annotations(\
+                fencepost_annotations)
+        label_scores_chart_np = label_scores_chart.cpu().data.numpy()
+
+        if is_train:
+            decoder_args = dict(
+                sentence_len=len(sentence),
+                label_scores_chart=label_scores_chart_np,
+                gold=gold,
+                label_vocab=self.label_vocab,
+                is_train=is_train)
+
+            p_score, p_i, p_j, p_label, p_augment = chart_helper.decode(\
+                    False, **decoder_args)
+            g_score, g_i, g_j, g_label, g_augment = chart_helper.decode(\
+                    True, **decoder_args)
+            return p_i, p_j, p_label, p_augment, g_i, g_j, g_label
+        else:
+            return self.decode_from_chart(sentence, label_scores_chart_np)
+
+    def decode_from_chart_batch(self, sentences, charts_np, golds=None):
+        trees = []
+        scores = []
+        if golds is None:
+            golds = [None] * len(sentences)
+        for sentence, chart_np, gold in zip(sentences, charts_np, golds):
+            tree, score = self.decode_from_chart(sentence, chart_np, gold)
+            trees.append(tree)
+            scores.append(score)
+        return trees, scores
+
+    def decode_from_chart(self, sentence, chart_np, gold=None):
+        decoder_args = dict(
+            sentence_len=len(sentence),
+            label_scores_chart=chart_np,
+            gold=gold,
+            label_vocab=self.label_vocab,
+            is_train=False)
+
+        force_gold = (gold is not None)
+
+        # The optimized cython decoder implementation doesn't actually
+        # generate trees, only scores and span indices. When converting to a
+        # tree, we assume that the indices follow a preorder traversal.
+        score, p_i, p_j, p_label, _ = chart_helper.decode(\
+                force_gold, **decoder_args)
+        last_splits = []
+        idx = -1
+        def make_tree():
+            nonlocal idx
+            idx += 1
+            i, j, label_idx = p_i[idx], p_j[idx], p_label[idx]
+            label = self.label_vocab.value(label_idx)
+            if (i + 1) >= j:
+                tag, word = sentence[i]
+                tree = trees.LeafParseNode(int(i), tag, word)
+                if label:
+                    tree = trees.InternalParseNode(label, [tree])
+                return [tree]
+            else:
+                left_trees = make_tree()
+                right_trees = make_tree()
+                children = left_trees + right_trees
+                if label:
+                    return [trees.InternalParseNode(label, children)]
+                else:
+                    return children
+
+        tree = make_tree()[0]
+        return tree, score
+
+# NOTE:
+# Copy and modification of NKChartParser; mainly in the speech encoding module
+class SpeechFeatureEncoder(nn.Module):
+    def __init__(self,
+            feature_sizes,
+            d_out,
+            conv_sizes=[5, 10, 25, 50],
+            num_conv=32,
+            d_pause_embedding=4,  
+            speech_dropout=0.0):
+        super().__init__()
+
+        self.d_pause_embedding = d_pause_embedding
+        self.d_out = d_out
+        self.speech_dropout = nn.Dropout(speech_dropout)
+        self.feature_sizes = feature_sizes
+        self.d_in = 0
+        self.num_conv = num_conv
+        self.conv_sizes = conv_sizes
+
+        if 'pause' in feature_sizes.keys():
+            self.emb = nn.Embedding(self.feature_sizes['pause'], \
+                    self.d_pause_embedding)
+            self.d_in += self.d_pause_embedding
+
+        if 'frames' in feature_sizes.keys():
+            conv_modules = []
+            feat_dim = feature_sizes['frames']
+            word_length = feature_sizes['word_length']
+            for filter_size in conv_sizes:
+                kernel_size = (filter_size, feat_dim)
+                pool_kernel = (word_length - filter_size + 1, 1)
+                filter_conv = nn.Sequential(
+                        nn.Conv2d(1, num_conv, kernel_size),
+                        nn.ReLU(),
+                        nn.MaxPool2d(pool_kernel, 1)
+                        )
+                conv_modules.append(filter_conv.to(device))
+
+            self.conv_modules = nn.ModuleList(conv_modules)
+
+            self.d_conv = self.num_conv * len(self.conv_sizes)
+            self.d_in += self.d_conv
+
+        if 'scalars' in feature_sizes.keys():
+            self.d_scalars = self.feature_sizes['scalars']
+            self.d_in += self.d_scalars
+
+        self.speech_projection = nn.Linear(self.d_in, self.d_out, bias=True)
+
+    def forward(self, processed_features):
+        pause_features, frame_features, scalar_features = processed_features
+        all_features = []
+        if len(pause_features) > 0:
+            all_features.append(self.emb(pause_features))
+        if len(scalar_features) > 0:
+            all_features.append(scalar_features.transpose(0, 1))
+        if len(frame_features) > 0:
+            conv_outputs = [convolve(frame_features) for \
+                    convolve in self.conv_modules]
+            conv_outputs = [x.squeeze(-1).squeeze(-1) for x in conv_outputs]
+            conv_outputs = torch.cat(conv_outputs, -1)
+            assert conv_outputs.shape[1] == self.d_conv
+            all_features.append(conv_outputs)
+        
+        all_features = torch.cat(all_features, -1)
+        assert all_features.shape[1] == self.d_in
+        res = self.speech_dropout(self.speech_projection(all_features))
+        return res
+
+# Probably won't need the char-level encoding since this is speech
+# But keeping it here for baseline and possible extra feature purposes
+class SpeechParser(nn.Module):
+    # We never actually call forward() end-to-end as is typical for pytorch
+    # modules, but this inheritance brings in good stuff like state dict
+    # management.
+    def __init__(
+            self,
+            tag_vocab,
+            word_vocab,
+            label_vocab,
+            char_vocab,
+            pause_vocab,
+            speech_features,
+            hparams,
+    ):
+        super().__init__()
+        self.spec = locals()
+        self.spec.pop("self")
+        self.spec.pop("__class__")
+        self.spec['hparams'] = hparams.to_dict()
+
+        self.tag_vocab = tag_vocab
+        self.word_vocab = word_vocab
+        self.label_vocab = label_vocab
+        self.char_vocab = char_vocab
+        self.pause_vocab = pause_vocab
+
+        self.d_model = hparams.d_model
+        self.partitioned = hparams.partitioned
+        self.d_content = (self.d_model // 2) if self.partitioned \
+                else self.d_model
+        self.d_positional = (hparams.d_model // 2) if self.partitioned \
+                else None
+
+        num_embeddings_map = {
+            'tags': tag_vocab.size,
+            'words': word_vocab.size,
+            'chars': char_vocab.size,
+            'pause': pause_vocab.size,
+        }
+        emb_dropouts_map = {
+            'tags': hparams.tag_emb_dropout,
+            'words': hparams.word_emb_dropout,
+        }
+
+        self.emb_types = []
+        if hparams.use_tags:
+            self.emb_types.append('tags')
+        if hparams.use_words:
+            self.emb_types.append('words')
+
+        self.use_tags = hparams.use_tags
+
+        self.morpho_emb_dropout = None
+        if hparams.use_chars_lstm or hparams.use_chars_concat or \
+                hparams.use_elmo:
+            self.morpho_emb_dropout = hparams.morpho_emb_dropout
+        else:
+            assert self.emb_types, ("Need at least one of: use_tags, \
+                    use_words, use_chars_lstm, use_chars_concat, use_elmo")
+
+        self.char_encoder = None
+        self.char_embedding = None
+        self.elmo = None
+        self.speech_encoder = None
+        self.fixed_word_length = hparams.fixed_word_length
+
+        if speech_features is not None:
+            feature_sizes = {}
+            if 'pause' in speech_features:
+                feature_sizes['pause'] = self.pause_vocab.size
+            if 'duration' in speech_features or 'f0coefs' in speech_features:
+                feature_sizes['scalars'] = \
+                      hparams.d_duration * int('duration' in speech_features) \
+                    + hparams.d_f0coefs * int('f0coefs' in speech_features)
+            if 'fbank' in speech_features or 'mfcc' in speech_features or \
+                    'pitch' in speech_features:
+                feature_sizes['word_length'] = self.fixed_word_length
+                feature_sizes['frames'] = \
+                    hparams.d_mfcc * int('mfcc' in speech_features) \
+                    + hparams.d_fbank * int('fbank' in speech_features) \
+                    + hparams.d_pitch * int('pitch' in speech_features)
+            self.speech_encoder = SpeechFeatureEncoder(feature_sizes, 
+                    self.d_content, d_pause_embedding=hparams.d_pause_emb)
+
+        if hparams.use_chars_lstm:
+            assert not hparams.use_chars_concat, ("use_chars_lstm and \
+                    use_chars_concat are mutually exclusive")
+            assert not hparams.use_elmo, ("use_chars_lstm and \
+                    use_elmo are mutually exclusive")
+            self.char_encoder = CharacterLSTM(
+                num_embeddings_map['chars'],
+                hparams.d_char_emb,
+                self.d_content,
+                char_dropout=hparams.char_lstm_input_dropout,
+            )
+        elif hparams.use_chars_concat:
+            assert not hparams.use_elmo, ("use_chars_concat and use_elmo \
+                    are mutually exclusive")
+            self.num_chars_flat = self.d_content // hparams.d_char_emb
+            assert self.num_chars_flat >= 2, ("incompatible settings of \
+                    d_model/partitioned and d_char_emb")
+            assert self.num_chars_flat == (self.d_content/hparams.d_char_emb),\
+                    ("d_char_emb does not evenly divide model size")
+
+            self.char_embedding = nn.Embedding(
+                num_embeddings_map['chars'],
+                hparams.d_char_emb,
+                )
+        elif hparams.use_elmo:
+            self.elmo = get_elmo_class()(
+                options_file="/homes/ttmt001/transitory/self-attentive-parser/data/elmo_2x4096_512_2048cnn_2xhighway_options.json",
+                weight_file="/homes/ttmt001/transitory/self-attentive-parser/data/elmo_2x4096_512_2048cnn_2xhighway_weights.hdf5",
+                num_output_representations=1,
+                requires_grad=False,
+                do_layer_norm=False,
+                dropout=hparams.elmo_dropout,
+                )
+            d_elmo_annotations = 1024
+
+            # Don't train gamma parameter for ELMo - the projection can do any
+            # necessary scaling
+            self.elmo.scalar_mix_0.gamma.requires_grad = False
+
+            # Reshapes the embeddings to match the model dimension, and making
+            # the projection trainable appears to improve parsing accuracy
+            self.project_elmo = nn.Linear(d_elmo_annotations, 
+                    self.d_content, 
+                    bias=False)
+
+        self.embedding = MultiLevelEmbedding(
+            [num_embeddings_map[emb_type] for emb_type in self.emb_types],
+            hparams.d_model,
+            d_positional=self.d_positional,
+            dropout=hparams.embedding_dropout,
+            timing_dropout=hparams.timing_dropout,
+            emb_dropouts_list=[emb_dropouts_map[emb_type] for emb_type \
+                    in self.emb_types],
+            extra_content_dropout=self.morpho_emb_dropout,
+            max_len=hparams.sentence_max_len,
+        )
+
+        self.encoder = Encoder(
+            self.embedding,
+            num_layers=hparams.num_layers,
+            num_heads=hparams.num_heads,
+            d_kv=hparams.d_kv,
+            d_ff=hparams.d_ff,
+            d_positional=self.d_positional,
+            num_layers_position_only=hparams.num_layers_position_only,
+            relu_dropout=hparams.relu_dropout,
+            residual_dropout=hparams.residual_dropout,
+            attention_dropout=hparams.attention_dropout,
+        )
+
+        self.f_label = nn.Sequential(
+            nn.Linear(hparams.d_model, hparams.d_label_hidden),
+            LayerNormalization(hparams.d_label_hidden),
+            nn.ReLU(),
+            nn.Linear(hparams.d_label_hidden, label_vocab.size - 1),
+            )
+
+        if use_cuda:
+            self.cuda()
+
+    @property
+    def model(self):
+        return self.state_dict()
+
+    @classmethod
+    def from_spec(cls, spec, model):
+        spec = spec.copy()
+        hparams = spec['hparams']
+        if 'sentence_max_len' not in hparams:
+            hparams['sentence_max_len'] = 300
+        if 'use_elmo' not in hparams:
+            hparams['use_elmo'] = False
+        if 'elmo_dropout' not in hparams:
+            hparams['elmo_dropout'] = 0.5
+
+        spec['hparams'] = nkutil.HParams(**hparams)
+        res = cls(**spec)
+        if use_cuda:
+            res.cpu()
+        if not hparams['use_elmo']:
+            res.load_state_dict(model)
+        else:
+            state = {k: v for k,v in res.state_dict().items() if k not in model}
+            state.update(model)
+            res.load_state_dict(state)
+        if use_cuda:
+            res.cuda()
+        return res
+    
+    def process_sent_frames(self, sent_partition, sent_frames):
+        feat_dim = sent_frames.shape[0]
+        speech_frames = []
+        for frame_idx in sent_partition:
+            center_frame = int((frame_idx[0] + frame_idx[1])/2)
+            start_idx = center_frame - int(self.fixed_word_length/2)
+            end_idx = center_frame + int(self.fixed_word_length/2)
+            raw_word_frames = sent_frames[:, frame_idx[0]:frame_idx[1]]
+            # feat_dim * number of frames
+            raw_count = raw_word_frames.shape[1]
+            if raw_count > self.fixed_word_length:
+                # too many frames, choose wisely
+                this_word_frames = sent_frames[:, frame_idx[0]:frame_idx[1]]
+                extra_ratio = int(raw_count/self.fixed_word_length)
+                if extra_ratio < 2:  # delete things in the middle
+                    mask = np.ones(raw_count, dtype=bool)
+                    num_extra = raw_count - self.fixed_word_length
+                    not_include = range(center_frame-num_extra,
+                                        center_frame+num_extra)[::2]
+                    # need to offset by beginning frame
+                    not_include = [x-frame_idx[0] for x in not_include]
+                    mask[not_include] = False
+                else:  # too big, just sample
+                    mask = np.zeros(raw_count, dtype=bool)
+                    include = range(frame_idx[0], frame_idx[1])[::extra_ratio]
+                    include = [x-frame_idx[0] for x in include]
+                    if len(include) > self.fixed_word_length:
+                        # still too many frames
+                        num_current = len(include)
+                        sub_extra = num_current - self.fixed_word_length
+                        num_start = int((num_current - sub_extra)/2)
+                        not_include = include[num_start:num_start+sub_extra]
+                        for ni in not_include:
+                            include.remove(ni)
+                    mask[include] = True
+                this_word_frames = this_word_frames[:, mask]
+            else:  # not enough frames, choose frames extending from center
+                this_word_frames = sent_frames[:, max(0, start_idx):end_idx]
+                if this_word_frames.shape[1] == 0:
+                    # make 0 if no frame info
+                    this_word_frames = np.zeros((feat_dim,
+                                                 self.fixed_word_length))
+                if start_idx < 0 and \
+                        this_word_frames.shape[1] < self.fixed_word_length:
+                    this_word_frames = np.hstack(
+                        [np.zeros((feat_dim, -start_idx)), this_word_frames])
+
+                # still not enough frames
+                if this_word_frames.shape[1] < self.fixed_word_length:
+                    num_more = self.fixed_word_length-this_word_frames.shape[1]
+                    this_word_frames = np.hstack(
+                        [this_word_frames, np.zeros((feat_dim, num_more))])
+            # flip frames within word
+            speech_frames.append(this_word_frames)
+        
+        # Add dummy word features for START and STOP
+        sent_frame_features = [np.zeros((feat_dim, self.fixed_word_length))] \
+            + speech_frames + [np.zeros((feat_dim, self.fixed_word_length))] 
+        return sent_frame_features
+
+    def prep_features(self, sent_ids, sfeatures):
+        pause_features = []
+        frame_features = []
+        scalar_features = []
+        for sent in sent_ids:
+            sent_features = sfeatures[sent]
+            if 'pause' in sent_features.keys():
+                sent_pauses = [START] + [str(i) for i in \
+                        sent_features['pause']] + [STOP]
+                sent_pauses = [self.pause_vocab.index(x) for x in sent_pauses]
+                pause_features += sent_pauses
+            if 'scalars' in sent_features.keys():
+                sent_scalars = sent_features['scalars']
+                feat_dim = sent_scalars.shape[0]
+                sent_scalar_feat = np.hstack([np.zeros((feat_dim, 1)), \
+                        sent_scalars, \
+                        np.zeros((feat_dim, 1))])
+                scalar_features.append(sent_scalar_feat)
+            if 'frames' in sent_features.keys():
+                assert 'partition' in sent_features.keys(), \
+                        ("Must provide partition as a feature")
+                sent_partition = sent_features['partition']
+                sent_frames = sent_features['frames']
+                sent_frame_features = self.process_sent_frames(sent_partition, \
+                        sent_frames)
+                # sent_frame_features: list of [feat_dim, fixed_word_length]
+                sent_frame_features = [torch.Tensor(word_frames.T).unsqueeze(0)\
+                        for word_frames in sent_frame_features]
+                frame_features += sent_frame_features
+        
+        if pause_features:
+            pause_features = torch.LongTensor(pause_features).to(device)
+        
+        if frame_features:
+            # need frame feats of shape: [batch, 1, fixed_word_length, feat_dim]
+            # second dimension is num input channel, defaults to 1        
+            frame_features = torch.cat(frame_features, 0)
+            frame_features = frame_features.unsqueeze(1).to(device)
+
+        if scalar_features:
+            scalar_features = np.hstack(scalar_features)
+            scalar_features = torch.Tensor(scalar_features).to(device)
+        
+        return pause_features, frame_features, scalar_features
+
+    def split_batch(self, sentences, golds, sent_ids, subbatch_max_tokens=3000):
+        lens = [len(sentence) + 2 for sentence in sentences]
+        lens = np.asarray(lens, dtype=int)
+        lens_argsort = np.argsort(lens).tolist()
+        num_subbatches = 0
+        subbatch_size = 1
+        while lens_argsort:
+            if (subbatch_size==len(lens_argsort)) or (subbatch_size * \
+                    lens[lens_argsort[subbatch_size]]>subbatch_max_tokens):
+                yield [sentences[i] for i in lens_argsort[:subbatch_size]], \
+                        [golds[i] for i in lens_argsort[:subbatch_size]], \
+                        [sent_ids[i] for i in lens_argsort[:subbatch_size]]
+                lens_argsort = lens_argsort[subbatch_size:]
+                num_subbatches += 1
+                subbatch_size = 1
+            else:
+                subbatch_size += 1
+
+    def parse(self, sentence, gold=None):
+        tree_list, loss_list = self.parse_batch([sentence], [gold] \
+                if gold is not None else None)
+        return tree_list[0], loss_list[0]
+
+    def parse_batch(self, sentences, sent_ids, sfeatures, golds=None, \
+            return_label_scores_charts=False):
+        is_train = golds is not None
+        self.train(is_train)
+
+        if golds is None:
+            golds = [None] * len(sentences)
+
+        packed_len = sum([(len(sentence) + 2) for sentence in sentences])
+
+        i = 0
+        tag_idxs = np.zeros(packed_len, dtype=int)
+        word_idxs = np.zeros(packed_len, dtype=int)
+        batch_idxs = np.zeros(packed_len, dtype=int)
+        for snum, sentence in enumerate(sentences):
+            for (tag, word) in [(START, START)] + sentence + [(STOP, STOP)]:
+                tag_idxs[i] = 0 if not self.use_tags \
+                        else self.tag_vocab.index_or_unk(tag, TAG_UNK)
+                if word not in (START, STOP):
+                    count = self.word_vocab.count(word)
+                    if not count or \
+                            (is_train and np.random.rand() < 1 / (1 + count)):
+                        word = UNK
+                word_idxs[i] = self.word_vocab.index(word)
+                batch_idxs[i] = snum
+                i += 1
+        assert i == packed_len
+
+        batch_idxs = BatchIndices(batch_idxs)
+
+        emb_idxs_map = {
+            'tags': tag_idxs,
+            'words': word_idxs,
+        }
+        # Got rid of Variable wrapping here
+        emb_idxs = [torch.LongTensor(emb_idxs_map[emb_type]).to(device) \
+                for emb_type in self.emb_types]
+
+        extra_content_annotations = None
+        speech_content_annotations = None
+        
+        if self.speech_encoder is not None:
+            # process speeech feature: pad, extract frames etcs
+            processed_features = self.prep_features(sent_ids, sfeatures)
+            speech_content_annotations = self.speech_encoder(processed_features)
+
+        if self.char_encoder is not None:
+            assert isinstance(self.char_encoder, CharacterLSTM)
+            max_word_len = max([max([len(word) for tag, word in sentence]) \
+                    for sentence in sentences])
+            # Add 2 for start/stop tokens
+            max_word_len = max(max_word_len, 3) + 2
+            char_idxs_encoder = np.zeros((packed_len, max_word_len), dtype=int)
+            word_lens_encoder = np.zeros(packed_len, dtype=int)
+
+            i = 0
+            for snum, sentence in enumerate(sentences):
+                for wordnum, (tag, word) in \
+                    enumerate([(START, START)] + sentence + [(STOP, STOP)]):
+                    j = 0
+                    char_idxs_encoder[i, j] = self.char_vocab.index(
+                            CHAR_START_WORD)
+                    j += 1
+                    if word in (START, STOP):
+                        char_idxs_encoder[i, j:j+3] = self.char_vocab.index(
+                            CHAR_START_SENTENCE if (word == START) \
+                                    else CHAR_STOP_SENTENCE)
+                        j += 3
+                    else:
+                        for char in word:
+                            char_idxs_encoder[i, j] = \
+                                    self.char_vocab.index_or_unk(char, CHAR_UNK)
+                            j += 1
+                    char_idxs_encoder[i, j] = \
+                            self.char_vocab.index(CHAR_STOP_WORD)
+                    word_lens_encoder[i] = j + 1
+                    i += 1
+            assert i == packed_len
+
+            extra_content_annotations = self.char_encoder(char_idxs_encoder, \
+                    word_lens_encoder, batch_idxs)
+
+        elif self.char_embedding is not None:
+            char_idxs_encoder = np.zeros((packed_len, self.num_chars_flat), \
+                    dtype=int)
+
+            i = 0
+            for snum, sentence in enumerate(sentences):
+                for wordnum, (tag, word) in enumerate([(START, START)] \
+                        + sentence + [(STOP, STOP)]):
+                    if word == START:
+                        char_idxs_encoder[i, :] = self.char_vocab.index(
+                                CHAR_START_SENTENCE)
+                    elif word == STOP:
+                        char_idxs_encoder[i, :] = self.char_vocab.index(
+                                CHAR_STOP_SENTENCE)
+                    else:
+                        word_chars = \
+                            (([self.char_vocab.index(CHAR_START_WORD)] \
+                                * self.num_chars_flat) \
+                                + [self.char_vocab.index_or_unk(char, CHAR_UNK)\
+                                for char in word] \
+                                + ([self.char_vocab.index(CHAR_STOP_WORD)] \
+                                * self.num_chars_flat))
+                        char_idxs_encoder[i, :self.num_chars_flat//2] = \
+                            word_chars[self.num_chars_flat:self.num_chars_flat \
+                            + self.num_chars_flat//2]
+                        char_idxs_encoder[i, self.num_chars_flat//2:] = \
+                            word_chars[::-1][self.num_chars_flat:self.num_chars_flat + self.num_chars_flat//2]
+                    i += 1
+            assert i == packed_len
+
+            # Got rid of Variable here
+            char_idxs_encoder = from_numpy(char_idxs_encoder)
+
+            extra_content_annotations = self.char_embedding(char_idxs_encoder)
+            extra_content_annotations = extra_content_annotations.view(-1, \
+                    self.num_chars_flat * self.char_embedding.embedding_dim)
+
+        if self.elmo is not None:
+            # See https://github.com/allenai/allennlp/blob/c3c3549887a6b1fb0bc8abf77bc820a3ab97f788/allennlp/data/token_indexers/elmo_indexer.py#L61
+            # ELMO_START_SENTENCE = 256
+            # ELMO_STOP_SENTENCE = 257
+            ELMO_START_WORD = 258
+            ELMO_STOP_WORD = 259
+            ELMO_CHAR_PAD = 260
+
+            # Sentence start/stop tokens are added inside the ELMo module
+            max_sentence_len = max([(len(sentence)) for sentence in sentences])
+            max_word_len = 50
+            char_idxs_encoder = np.zeros((len(sentences), \
+                    max_sentence_len, max_word_len), dtype=int)
+
+            for snum, sentence in enumerate(sentences):
+                for wordnum, (tag, word) in enumerate(sentence):
+                    char_idxs_encoder[snum, wordnum, :] = ELMO_CHAR_PAD
+
+                    j = 0
+                    char_idxs_encoder[snum, wordnum, j] = ELMO_START_WORD
+                    j += 1
+                    assert word not in (START, STOP)
+                    for char_id in word.encode('utf-8', 'ignore')[:(max_word_len-2)]:
+                        char_idxs_encoder[snum, wordnum, j] = char_id
+                        j += 1
+                    char_idxs_encoder[snum, wordnum, j] = ELMO_STOP_WORD
+
+                    # +1 for masking 
+                    # (everything that stays 0 is past the end of the sentence)
+                    char_idxs_encoder[snum, wordnum, :] += 1
+
+            # Got rid of Variable here
+            char_idxs_encoder = from_numpy(char_idxs_encoder)
+
+            elmo_out = self.elmo.forward(char_idxs_encoder)
+            elmo_rep0 = elmo_out['elmo_representations'][0]
+            elmo_mask = elmo_out['mask']
+
+            d_elmo = elmo_rep0.shape[-1]
+            #print("Elmo debug", elmo_rep0.shape, elmo_mask.byte().unsqueeze(-1).repeat(1, 1, d_elmo).shape)
+            #print(elmo_rep0)
+            #print(elmo_mask)
+            #print(elmo_mask.byte().unsqueeze(-1))
+            #print(elmo_mask.byte().unsqueeze(-1).repeat(1, 1, d_elmo))
+
+            # pytorch 0.4.x requires same dimension for mask
+            #elmo_annotations_packed = elmo_rep0[
+            #        elmo_mask.byte().unsqueeze(-1)].view(packed_len, -1)
+            elmo_annotations_packed = elmo_rep0[
+                    elmo_mask.byte().unsqueeze(-1).repeat(1, 1, d_elmo)
+                    ].view(packed_len, -1)
+
+            # Apply projection to match dimensionality
+            extra_content_annotations = self.project_elmo(
+                    elmo_annotations_packed)
+
+        if speech_content_annotations is not None:
+            if extra_content_annotations is not None:
+                extra_content_annotations = extra_content_annotations + \
+                        speech_content_annotations
+            else:
+                extra_content_annotations = speech_content_annotations
 
         annotations, _ = self.encoder(emb_idxs, batch_idxs, 
                 extra_content_annotations=extra_content_annotations)

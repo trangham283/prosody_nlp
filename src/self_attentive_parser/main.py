@@ -2,12 +2,13 @@ import argparse
 import itertools
 import os.path
 import time
+import pickle
 
 import torch
 import torch.optim.lr_scheduler
 
 import numpy as np
-
+import sys
 import evaluate
 import trees
 import vocabulary
@@ -62,11 +63,20 @@ def make_hparams():
 
         use_tags=False,
         use_words=False,
+        use_pause=False,
         use_chars_lstm=False,
         use_chars_concat=False,
         use_elmo=False,
 
         d_char_emb=32, # A larger value may be better for use_chars_lstm
+        d_pause_emb=4,
+
+        d_duration = 2,
+        d_mfcc = 13,
+        d_pitch = 3,
+        d_fbank = 3,
+        d_f0coefs = 12,
+        fixed_word_length = 100,
 
         tag_emb_dropout=0.2,
         word_emb_dropout=0.4,
@@ -76,10 +86,39 @@ def make_hparams():
         elmo_dropout=0.5, # Note that this semi-stacks with morpho_emb_dropout!
         )
 
+def load_features(sent_ids, feat_dict):
+    if not feat_dict: 
+        return None
+    batch_features = {}
+    for sent in sent_ids:
+        features = {}
+        for k in feat_dict.keys():
+            if k == 'pause':
+                features[k] = feat_dict[k][sent]['pause_aft']
+            elif k in ['pitch', 'fbank', 'mfcc']:
+                if 'frames' not in features.keys(): 
+                    features['frames'] = feat_dict[k][sent]
+                else:
+                    features['frames'] = np.vstack([features['frames'], \
+                        feat_dict[k][sent]])
+            elif k in ['duration', 'f0coefs']:
+                if 'scalars' not in features.keys():
+                    features['scalars'] = feat_dict[k][sent]
+                else:
+                    features['scalars'] = np.vstack([features['scalars'], \
+                            feat_dict[k][sent]])
+            else:
+                # Partition feature is left
+                features[k] = feat_dict[k][sent]
+        batch_features[sent] = features
+    return batch_features
+
+
 def run_train(args, hparams):
     if args.numpy_seed is not None:
         print("Setting numpy random seed to {}...".format(args.numpy_seed))
         np.random.seed(args.numpy_seed)
+        sys.stdout.flush()
 
     # Make sure that pytorch is actually being initialized randomly.
     # On my cluster I was getting highly correlated results from multiple
@@ -92,25 +131,49 @@ def run_train(args, hparams):
     torch.manual_seed(seed_from_numpy)
 
     hparams.set_from_args(args)
-    print("Hyperparameters:")
-    hparams.print()
 
     print("Loading training trees from {}...".format(args.train_path))
-    train_treebank = trees.load_trees(args.train_path)
-    if hparams.max_len_train > 0:
-        train_treebank = [tree for tree in train_treebank if len(list(tree.leaves())) <= hparams.max_len_train]
-    print("Loaded {:,} training examples.".format(len(train_treebank)))
+    train_treebank, train_sent_ids = trees.load_trees_with_idx(args.train_path,\
+            args.train_sent_id_path)
+    #if hparams.max_len_train > 0:
+    #    train_treebank = [tree for tree in train_treebank if \
+    #            len(list(tree.leaves())) <= hparams.max_len_train]
 
-    print("Loading development trees from {}...".format(args.dev_path))
-    dev_treebank = trees.load_trees(args.dev_path)
-    if hparams.max_len_dev > 0:
-        dev_treebank = [tree for tree in dev_treebank if len(list(tree.leaves())) <= hparams.max_len_dev]
-    print("Loaded {:,} development examples.".format(len(dev_treebank)))
+    print("Processing pause features for training...")
+    pause_path = os.path.join(args.feature_path, 'train_pause.pickle')
+    with open(pause_path, 'rb') as f:
+        pause_data = pickle.load(f, encoding='latin1')
 
     print("Processing trees for training...")
     train_parse = [tree.convert() for tree in train_treebank]
+    # Removing sentences without speech info
+    to_remove = set(train_sent_ids).difference(set(pause_data.keys()))
+    to_remove = sorted([train_sent_ids.index(i) for i in to_remove])
+    for x in to_remove[::-1]:
+        train_parse.pop(x)
+        train_sent_ids.pop(x)
+    train_set = list(zip(train_sent_ids, train_parse))
+    print("Loaded {:,} training examples.".format(len(train_treebank)))
+
+    # Remove sentences without prosodic features in dev set
+    print("Loading development trees from {}...".format(args.dev_path))
+    dev_treebank, dev_sent_ids = trees.load_trees_with_idx(args.dev_path, \
+            args.dev_sent_id_path)
+    dev_pause_path = os.path.join(args.feature_path, 'dev_pause.pickle')
+    with open(dev_pause_path, 'rb') as f:
+        dev_pause_data = pickle.load(f, encoding='latin1')
+    to_remove = set(dev_sent_ids).difference(set(dev_pause_data.keys()))
+    to_remove = sorted([dev_sent_ids.index(i) for i in to_remove])
+    for x in to_remove[::-1]:
+        dev_treebank.pop(x)
+        dev_sent_ids.pop(x)
+    #if hparams.max_len_dev > 0:
+    #    dev_treebank = [tree for tree in dev_treebank if \
+    #            len(list(tree.leaves())) <= hparams.max_len_dev]
+    print("Loaded {:,} development examples.".format(len(dev_treebank)))
 
     print("Constructing vocabularies...")
+    sys.stdout.flush()
 
     tag_vocab = vocabulary.Vocabulary()
     tag_vocab.index(tokens.START)
@@ -122,10 +185,19 @@ def run_train(args, hparams):
     word_vocab.index(tokens.STOP)
     word_vocab.index(tokens.UNK)
 
+    pause_vocab = vocabulary.Vocabulary()
+    pause_vocab.index(tokens.START)
+    pause_vocab.index(tokens.STOP)
+
     label_vocab = vocabulary.Vocabulary()
     label_vocab.index(())
 
     char_set = set()
+
+    for v in pause_data.values():
+        pauses = v['pause_aft']
+        for p in pauses:
+            pause_vocab.index(str(p))
 
     for tree in train_parse:
         nodes = [tree]
@@ -140,6 +212,7 @@ def run_train(args, hparams):
                 char_set |= set(node.word)
 
     char_vocab = vocabulary.Vocabulary()
+    print(len(char_set))
 
     # If codepoints are small (e.g. Latin alphabet), index by codepoint directly
     highest_codepoint = max(ord(char) for char in char_set)
@@ -166,6 +239,7 @@ def run_train(args, hparams):
     word_vocab.freeze()
     label_vocab.freeze()
     char_vocab.freeze()
+    pause_vocab.freeze()
 
     def print_vocabulary(name, vocab):
         special = {tokens.START, tokens.STOP, tokens.UNK}
@@ -178,26 +252,64 @@ def run_train(args, hparams):
         print_vocabulary("Tag", tag_vocab)
         print_vocabulary("Word", word_vocab)
         print_vocabulary("Label", label_vocab)
+        print_vocabulary("Pause", pause_vocab)
 
+    feat_dict = {}
+    speech_features = None
+    if args.speech_features is not None:
+        speech_features = args.speech_features.split(',')
+        if 'pause' in speech_features:
+            hparams.use_pause = True
+        print("Loading speech features for training set...")
+        for feat_type in speech_features:
+            print("\t", feat_type)
+            feat_path = os.path.join(args.feature_path, \
+                    'train_' + feat_type + '.pickle')
+            with open(feat_path, 'rb') as f:
+                feat_data = pickle.load(f, encoding='latin1')
+            feat_dict[feat_type] = feat_data
+
+    dev_feat_dict = {}
+    if args.speech_features is not None:
+        speech_features = args.speech_features.split(',')
+        print("Loading speech features for dev set...")
+        for feat_type in speech_features:
+            print("\t", feat_type)
+            feat_path = os.path.join(args.feature_path, \
+                    'dev_' + feat_type + '.pickle')
+            with open(feat_path, 'rb') as f:
+                feat_data = pickle.load(f, encoding='latin1')
+            dev_feat_dict[feat_type] = feat_data
+
+    print("Hyperparameters:")
+    hparams.print()
     print("Initializing model...")
+    sys.stdout.flush()
 
     load_path = None
     if load_path is not None:
-        print(f"Loading parameters from {load_path}")
+        print("Loading parameters from ".format(load_path))
         info = torch_load(load_path)
-        parser = parse_nk.NKChartParser.from_spec(info['spec'], info['state_dict'])
+        parser = parse_nk.SpeechParser.from_spec(info['spec'], \
+                info['state_dict'])
     else:
-        parser = parse_nk.NKChartParser(
+        parser = parse_nk.SpeechParser(
             tag_vocab,
             word_vocab,
             label_vocab,
             char_vocab,
+            pause_vocab,
+            speech_features,
             hparams,
         )
 
     print("Initializing optimizer...")
-    trainable_parameters = [param for param in parser.parameters() if param.requires_grad]
-    trainer = torch.optim.Adam(trainable_parameters, lr=1., betas=(0.9, 0.98), eps=1e-9)
+    trainable_parameters = [param for param in parser.parameters() \
+            if param.requires_grad]
+    print(parser)
+    #print(trainable_parameters)
+    trainer = torch.optim.Adam(trainable_parameters, lr=1., \
+            betas=(0.9, 0.98), eps=1e-9)
     if load_path is not None:
         trainer.load_state_dict(info['trainer'])
 
@@ -220,7 +332,8 @@ def run_train(args, hparams):
             set_lr(iteration * warmup_coeff)
 
     clippable_parameters = trainable_parameters
-    grad_clip_threshold = np.inf if hparams.clip_grad_norm == 0 else hparams.clip_grad_norm
+    grad_clip_threshold = np.inf if hparams.clip_grad_norm == 0 \
+            else hparams.clip_grad_norm
 
     print("Training...")
     total_processed = 0
@@ -230,7 +343,7 @@ def run_train(args, hparams):
     best_dev_model_path = None
 
     start_time = time.time()
-
+    
     def check_dev():
         nonlocal best_dev_fscore
         nonlocal best_dev_model_path
@@ -238,10 +351,19 @@ def run_train(args, hparams):
         dev_start_time = time.time()
 
         dev_predicted = []
-        for dev_start_index in range(0, len(dev_treebank), args.eval_batch_size):
-            subbatch_trees = dev_treebank[dev_start_index:dev_start_index+args.eval_batch_size]
-            subbatch_sentences = [[(leaf.tag, leaf.word) for leaf in tree.leaves()] for tree in subbatch_trees]
-            predicted, _ = parser.parse_batch(subbatch_sentences)
+        eval_batch_size = args.eval_batch_size
+        for dev_start_index in range(0, len(dev_treebank), eval_batch_size):
+            subbatch_trees = dev_treebank[dev_start_index:dev_start_index \
+                    + eval_batch_size]
+            subbatch_sent_ids = dev_sent_ids[dev_start_index:dev_start_index \
+                    + eval_batch_size]
+            subbatch_sentences = [[(leaf.tag, leaf.word) for leaf in \
+                    tree.leaves()] for tree in subbatch_trees]
+            subbatch_features = load_features(subbatch_sent_ids, dev_feat_dict)
+
+            predicted, _ = parser.parse_batch(subbatch_sentences, \
+                    subbatch_sent_ids, subbatch_features)
+
             del _
             dev_predicted.extend([p.convert() for p in predicted])
 
@@ -256,6 +378,7 @@ def run_train(args, hparams):
                 format_elapsed(start_time),
             )
         )
+        sys.stdout.flush()
 
         if dev_fscore.fscore > best_dev_fscore:
             if best_dev_model_path is not None:
@@ -275,24 +398,32 @@ def run_train(args, hparams):
                 'state_dict': parser.state_dict(),
                 'trainer' : trainer.state_dict(),
                 }, best_dev_model_path + ".pt")
+            sys.stdout.flush()
 
     for epoch in itertools.count(start=1):
         if args.epochs is not None and epoch > args.epochs:
             break
 
-        np.random.shuffle(train_parse)
+        np.random.shuffle(train_set)
         epoch_start_time = time.time()
 
-        for start_index in range(0, len(train_parse), args.batch_size):
+        for start_index in range(0, len(train_set), args.batch_size):
             trainer.zero_grad()
             schedule_lr(total_processed // args.batch_size)
 
             batch_loss_value = 0.0
-            batch_trees = train_parse[start_index:start_index + args.batch_size]
-            batch_sentences = [[(leaf.tag, leaf.word) for leaf in tree.leaves()] for tree in batch_trees]
+            batch_trees = [x[1] for x in \
+                    train_set[start_index:start_index + args.batch_size]]
+            batch_sent_ids = [x[0] for x in \
+                    train_set[start_index:start_index + args.batch_size]]
+            batch_sentences = [[(leaf.tag, leaf.word) for leaf \
+                    in tree.leaves()] for tree in batch_trees]
 
-            for subbatch_sentences, subbatch_trees in parser.split_batch(batch_sentences, batch_trees, args.subbatch_max_tokens):
-                _, loss = parser.parse_batch(subbatch_sentences, subbatch_trees)
+            for subbatch_sentences, subbatch_trees, subbatch_sent_ids in parser.split_batch(batch_sentences, batch_trees, batch_sent_ids, args.subbatch_max_tokens):
+                subbatch_features = load_features(subbatch_sent_ids, feat_dict) 
+                
+                _, loss = parser.parse_batch(subbatch_sentences, \
+                        subbatch_sent_ids, subbatch_features, subbatch_trees)
 
                 loss = loss / len(batch_trees)
                 loss_value = float(loss.data.cpu().numpy())
@@ -326,6 +457,7 @@ def run_train(args, hparams):
                     format_elapsed(start_time),
                 )
             )
+            sys.stdout.flush()
 
             if current_processed >= check_every:
                 current_processed -= check_every
@@ -338,26 +470,69 @@ def run_train(args, hparams):
 
 def run_test(args):
     print("Loading test trees from {}...".format(args.test_path))
-    test_treebank = trees.load_trees(args.test_path)
+    test_treebank, test_sent_ids = trees.load_trees_with_idx(args.test_path, \
+            args.test_sent_id_path)
+    test_pause_path = os.path.join(args.feature_path, args.test_prefix + \
+            '_pause.pickle')
+    with open(test_pause_path, 'rb') as f:
+        test_pause_data = pickle.load(f, encoding='latin1')
+    to_remove = set(test_sent_ids).difference(set(test_pause_data.keys()))
+    to_remove = sorted([test_sent_ids.index(i) for i in to_remove])
+    for x in to_remove[::-1]:
+        test_treebank.pop(x)
+        test_sent_ids.pop(x)
+
     print("Loaded {:,} test examples.".format(len(test_treebank)))
 
     print("Loading model from {}...".format(args.model_path_base))
     assert args.model_path_base.endswith(".pt"), "Only pytorch savefiles supported"
 
     info = torch_load(args.model_path_base)
+    print(info.keys())
     assert 'hparams' in info['spec'], "Older savefiles not supported"
-    parser = parse_nk.NKChartParser.from_spec(info['spec'], info['state_dict'])
+    parser = parse_nk.SpeechParser.from_spec(info['spec'], info['state_dict'])
+
+    test_feat_dict = {}
+    if info['spec']['speech_features'] is not None:
+        speech_features = info['spec']['speech_features']
+        print("Loading speech features for test set...")
+        for feat_type in speech_features:
+            print("\t", feat_type)
+            feat_path = os.path.join(args.feature_path, \
+                    args.test_prefix + '_' + feat_type + '.pickle')
+            with open(feat_path, 'rb') as f:
+                feat_data = pickle.load(f, encoding='latin1')
+            test_feat_dict[feat_type] = feat_data
 
     print("Parsing test sentences...")
     start_time = time.time()
 
     test_predicted = []
     for start_index in range(0, len(test_treebank), args.eval_batch_size):
-        subbatch_trees = test_treebank[start_index:start_index+args.eval_batch_size]
-        subbatch_sentences = [[(leaf.tag, leaf.word) for leaf in tree.leaves()] for tree in subbatch_trees]
-        predicted, _ = parser.parse_batch(subbatch_sentences)
+        subbatch_trees = test_treebank[start_index:start_index \
+                + args.eval_batch_size]
+        subbatch_sent_ids = test_sent_ids[start_index:start_index \
+                + args.eval_batch_size]
+        subbatch_sentences = [[(leaf.tag, leaf.word) for leaf in \
+                tree.leaves()] for tree in subbatch_trees]
+        subbatch_features = load_features(subbatch_sent_ids, test_feat_dict)
+        predicted, _ = parser.parse_batch(subbatch_sentences, \
+                    subbatch_sent_ids, subbatch_features)
         del _
         test_predicted.extend([p.convert() for p in predicted])
+
+    with open(args.output_path, 'w') as output_file:
+        for tree in test_predicted:
+            output_file.write("{}\n".format(tree.linearize()))
+    print("Output written to:", args.output_path)
+
+    # NOTE: DEBUG
+    #gold_path = args.test_prefix + "_gold.txt"
+    #gold_trees = [p for p in test_treebank]
+    #with open(gold_path, 'w') as gold_file:
+    #    for tree in gold_trees:
+    #        gold_file.write("{}\n".format(tree.linearize()))
+    #print("Gold trees written to:", gold_path)
 
     # The tree loader does some preprocessing to the trees (e.g. stripping TOP
     # symbols or SPMRL morphological features). We compare with the input file
@@ -371,8 +546,12 @@ def run_test(args):
     if args.test_path_raw is not None:
         print("Comparing with raw trees from", args.test_path_raw)
         ref_gold_path = args.test_path_raw
+    else:
+        # Need this since I'm evaluating on subset
+        ref_gold_path = None
 
-    test_fscore = evaluate.evalb(args.evalb_dir, test_treebank, test_predicted, ref_gold_path=ref_gold_path)
+    test_fscore = evaluate.evalb(args.evalb_dir, test_treebank, \
+            test_predicted, ref_gold_path=ref_gold_path, is_train=False)
 
     print(
         "test-fscore {} "
@@ -383,6 +562,7 @@ def run_test(args):
     )
 
 #%%
+# TODO: check this
 def run_ensemble(args):
     print("Loading test trees from {}...".format(args.test_path))
     test_treebank = trees.load_trees(args.test_path)
@@ -436,7 +616,7 @@ def run_ensemble(args):
     )
 
 #%%
-
+#TODO: check this
 def run_parse(args):
     if args.output_path != '-' and os.path.exists(args.output_path):
         print("Error: output file already exists:", args.output_path)
@@ -482,6 +662,7 @@ def run_parse(args):
         print("Output written to:", args.output_path)
 
 #%%
+#TODO: check this
 def run_viz(args):
     assert args.model_path_base.endswith(".pt"), "Only pytorch savefiles supported"
 
@@ -502,7 +683,7 @@ def run_viz(args):
     orig_multihead_forward = parse_nk.MultiHeadAttention.forward
     def wrapped_multihead_forward(self, inp, batch_idxs, **kwargs):
         res, attns = orig_multihead_forward(self, inp, batch_idxs, **kwargs)
-        stowed_values[f'attns{stowed_values["stack"]}'] = attns.cpu().data.numpy()
+        stowed_values['attns{}'.format(stowed_values["stack"])] = attns.cpu().data.numpy()
         stowed_values['stack'] += 1
         return res, attns
 
@@ -529,7 +710,7 @@ def run_viz(args):
             sentence_words = [tokens.START] + [x[1] for x in sentence] + [tokens.STOP]
 
             for stacknum in range(stowed_values['stack']):
-                attns_padded = stowed_values[f'attns{stacknum}']
+                attns_padded = stowed_values['attns{}'.format(stacknum)]
                 attns = attns_padded[snum::len(subbatch_sentences), :len(sentence_words), :len(sentence_words)]
                 viz_attention(sentence_words, attns)
 
@@ -545,8 +726,17 @@ def main():
     subparser.add_argument("--numpy-seed", type=int)
     subparser.add_argument("--model-path-base", required=True)
     subparser.add_argument("--evalb-dir", default="EVALB/")
-    subparser.add_argument("--train-path", default="data/02-21.10way.clean")
-    subparser.add_argument("--dev-path", default="data/22.auto.clean")
+    subparser.add_argument("--feature-path", \
+      default="/Users/trangtran/Misc/data/swbd_features")
+    subparser.add_argument("--train-path", \
+      default="/Users/trangtran/Misc/data/swbd_trees/swbd_train2.txt")
+    subparser.add_argument("--dev-path", \
+      default="/Users/trangtran/Misc/data/swbd_trees/swbd_dev.txt")
+    subparser.add_argument("--train-sent-id-path", \
+      default="/Users/trangtran/Misc/data/swbd_trees/train2_sent_ids.txt")
+    subparser.add_argument("--dev-sent-id-path", \
+      default="/Users/trangtran/Misc/data/swbd_trees/dev_sent_ids.txt")
+    subparser.add_argument("--speech-features", type=str, default=None)
     subparser.add_argument("--batch-size", type=int, default=250)
     subparser.add_argument("--subbatch-max-tokens", type=int, default=2000)
     subparser.add_argument("--eval-batch-size", type=int, default=100)
@@ -558,16 +748,31 @@ def main():
     subparser.set_defaults(callback=run_test)
     subparser.add_argument("--model-path-base", required=True)
     subparser.add_argument("--evalb-dir", default="EVALB/")
-    subparser.add_argument("--test-path", default="data/23.auto.clean")
-    subparser.add_argument("--test-path-raw", type=str)
+    subparser.add_argument("--feature-path", \
+        default="/Users/trangtran/Misc/data/swbd_features")
+    subparser.add_argument("--test-path", \
+        default="/Users/trangtran/Misc/data/swbd_trees/swbd_test.txt")
+    subparser.add_argument("--test-sent-id-path", \
+        default="/Users/trangtran/Misc/data/swbd_trees/test_sent_ids.txt")
+    subparser.add_argument("--speech-features", type=str, default=None)
+    subparser.add_argument("--test-prefix", type=str, default='test')
+    subparser.add_argument("--output-path", type=str, \
+        default="/Users/trangtran/Misc/data/parser_out/test_predicted.txt")
+    subparser.add_argument("--test-path-raw", type=str, default=None)
     subparser.add_argument("--eval-batch-size", type=int, default=100)
 
     subparser = subparsers.add_parser("ensemble")
     subparser.set_defaults(callback=run_ensemble)
     subparser.add_argument("--model-path-base", nargs='+', required=True)
     subparser.add_argument("--evalb-dir", default="EVALB/")
-    subparser.add_argument("--test-path", default="data/22.auto.clean")
+    subparser.add_argument("--feature-path", \
+        default="/Users/trangtran/Misc/data/swbd_features")
+    subparser.add_argument("--test-path", \
+        default="/Users/trangtran/Misc/data/swbd_trees/swbd_test.txt")
+    subparser.add_argument("--test-sent-id-path", \
+        default="/Users/trangtran/Misc/data/swbd_trees/test_sent_ids.txt")
     subparser.add_argument("--eval-batch-size", type=int, default=100)
+    subparser.add_argument("--speech-features", type=str, default=None)
 
     subparser = subparsers.add_parser("parse")
     subparser.set_defaults(callback=run_parse)

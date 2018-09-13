@@ -131,6 +131,57 @@ class LeafParseNode(ParseNode):
     def convert(self):
         return LeafTreebankNode(self.tag, self.word)
 
+# loading switchboard trees; need index to later get the corresponding
+# acoustic features; keep strip_top=False since I kept it in previous 
+# (seq2seq) experiments
+def load_trees_with_idx(path, sent_id_path, strip_top=True):
+    with open(path) as infile:
+        treebank = infile.read()
+
+    sent_ids = open(sent_id_path).readlines()
+    sent_ids = [x.strip() for x in sent_ids]
+
+    tokens = treebank.replace("(", " ( ").replace(")", " ) ").split()
+
+    def helper(index):
+        trees = []
+
+        while index < len(tokens) and tokens[index] == "(":
+            paren_count = 0
+            while tokens[index] == "(":
+                index += 1
+                paren_count += 1
+
+            label = tokens[index]
+            index += 1
+
+            if tokens[index] == "(":
+                children, index = helper(index)
+                trees.append(InternalTreebankNode(label, children))
+            else:
+                word = tokens[index]
+                index += 1
+                trees.append(LeafTreebankNode(label, word))
+
+            while paren_count > 0:
+                assert tokens[index] == ")"
+                index += 1
+                paren_count -= 1
+
+        return trees, index
+
+    trees, index = helper(0)
+    assert index == len(tokens)
+
+    if strip_top:
+        for i, tree in enumerate(trees):
+            if tree.label in ("TOP", "ROOT"):
+                assert len(tree.children) == 1
+                trees[i] = tree.children[0]
+
+    assert len(trees) == len(sent_ids)
+    return trees, sent_ids
+
 def load_trees(path, strip_top=True, strip_spmrl_features=True):
     with open(path) as infile:
         treebank = infile.read()
