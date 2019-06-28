@@ -1,7 +1,9 @@
 ## Acknowledgements
 The code in this repository is based on 
 https://github.com/nikitakit/self-attentive-parser
+
 and
+
 https://github.com/shtoshni92/speech_parsing
 
 (Parsers described in "Constituency Parsing with a Self-Attentive Encoder" 
