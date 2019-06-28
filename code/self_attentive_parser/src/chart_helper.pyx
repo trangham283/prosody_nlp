@@ -8,7 +8,7 @@ ctypedef np.float32_t DTYPE_t
 ORACLE_PRECOMPUTED_TABLE = {}
 
 @cython.boundscheck(False)
-def decode(int force_gold, int sentence_len, np.ndarray[DTYPE_t, ndim=3] label_scores_chart, int is_train, gold, label_vocab):
+def decode(int force_gold, int sentence_len, np.ndarray[DTYPE_t, ndim=3] label_scores_chart, int is_train, gold, label_vocab, int backoff):
     cdef DTYPE_t NEG_INF = -np.inf
 
     # Label scores chart is copied so we can modify it in-place for augmentated decode
@@ -45,7 +45,12 @@ def decode(int force_gold, int sentence_len, np.ndarray[DTYPE_t, ndim=3] label_s
             for length in range(1, sentence_len + 1):
                 for left in range(0, sentence_len + 1 - length):
                     right = left + length
-                    oracle_label_chart[left, right] = label_vocab.index(gold.oracle_label(left, right))
+                    # add backoff option
+                    temp = gold.oracle_label(left, right)
+                    if backoff and temp not in label_vocab.values:
+                        print("OOV", temp, temp[-1])
+                        temp = temp[-1:]
+                    oracle_label_chart[left, right] = label_vocab.index(temp)
                     if length == 1:
                         continue
                     oracle_splits = gold.oracle_splits(left, right)

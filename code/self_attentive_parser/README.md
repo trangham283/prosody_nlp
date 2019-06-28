@@ -1,4 +1,4 @@
-## IN PROGRESS/TBD
+## Acknowledgements
 The code in this repository is based on 
 https://github.com/nikitakit/self-attentive-parser
 
@@ -7,5 +7,7 @@ https://github.com/nikitakit/self-attentive-parser
 
 ## Modifications from original code cited above
 * Working with Pytorch 0.4.x instead of 0.3.x
-* Incorporating speech features
+* Incorporating speech features (CNN module)
+
+
 

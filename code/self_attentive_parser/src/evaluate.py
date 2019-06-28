@@ -7,14 +7,20 @@ import tempfile
 import trees
 
 class FScore(object):
-    def __init__(self, recall, precision, fscore):
+    def __init__(self, recall, precision, fscore, complete_match, tagging_accuracy=100):
         self.recall = recall
         self.precision = precision
         self.fscore = fscore
+        self.complete_match = complete_match
+        self.tagging_accuracy = 100
 
     def __str__(self):
-        return "(Recall={:.2f}, Precision={:.2f}, FScore={:.2f})".format(
-            self.recall, self.precision, self.fscore)
+        if self.tagging_accuracy < 100:
+            return "(Recall={:.2f}, Precision={:.2f}, FScore={:.2f}, CompleteMatch={:.2f}, TaggingAccuracy={:.2f})".format(
+                self.recall, self.precision, self.fscore, self.complete_match, self.tagging_accuracy)
+        else:
+            return "(Recall={:.2f}, Precision={:.2f}, FScore={:.2f}, CompleteMatch={:.2f})".format(
+                self.recall, self.precision, self.fscore, self.complete_match)
 
 def evalb(evalb_dir, gold_trees, predicted_trees, ref_gold_path=None, is_train=True):
     assert os.path.exists(evalb_dir)
@@ -23,7 +29,7 @@ def evalb(evalb_dir, gold_trees, predicted_trees, ref_gold_path=None, is_train=T
     assert os.path.exists(evalb_program_path) or os.path.exists(evalb_spmrl_program_path)
 
     if os.path.exists(evalb_program_path):
-        evalb_param_path = os.path.join(evalb_dir, "COLLINS.prm")
+        evalb_param_path = os.path.join(evalb_dir, "nk.prm")
     else:
         evalb_program_path = evalb_spmrl_program_path
         evalb_param_path = os.path.join(evalb_dir, "spmrl.prm")
@@ -74,7 +80,11 @@ def evalb(evalb_dir, gold_trees, predicted_trees, ref_gold_path=None, is_train=T
     )
     subprocess.run(command, shell=True)
 
-    fscore = FScore(math.nan, math.nan, math.nan)
+    # debug:
+    subprocess.run("wc {}".format(predicted_path), shell=True)
+    subprocess.run("wc {}".format(output_path), shell=True)
+
+    fscore = FScore(math.nan, math.nan, math.nan, math.nan)
     with open(output_path) as infile:
         for line in infile:
             match = re.match(r"Bracketing Recall\s+=\s+(\d+\.\d+)", line)
@@ -86,6 +96,12 @@ def evalb(evalb_dir, gold_trees, predicted_trees, ref_gold_path=None, is_train=T
             match = re.match(r"Bracketing FMeasure\s+=\s+(\d+\.\d+)", line)
             if match:
                 fscore.fscore = float(match.group(1))
+            match = re.match(r"Complete match\s+=\s+(\d+\.\d+)", line)
+            if match:
+                fscore.complete_match = float(match.group(1))
+            match = re.match(r"Tagging accuracy\s+=\s+(\d+\.\d+)", line)
+            if match:
+                fscore.tagging_accuracy = float(match.group(1))
                 break
 
     success = (

@@ -164,6 +164,7 @@ def load_trees_with_idx(path, sent_id_path, strip_top=True):
                 trees.append(LeafTreebankNode(label, word))
 
             while paren_count > 0:
+                #print(tokens[index-3:index+3])
                 assert tokens[index] == ")"
                 index += 1
                 paren_count -= 1
@@ -176,8 +177,11 @@ def load_trees_with_idx(path, sent_id_path, strip_top=True):
     if strip_top:
         for i, tree in enumerate(trees):
             if tree.label in ("TOP", "ROOT"):
+                #print(i, tree.linearize())
                 assert len(tree.children) == 1
                 trees[i] = tree.children[0]
+
+    print(len(trees), len(sent_ids))
 
     assert len(trees) == len(sent_ids)
     return trees, sent_ids

@@ -48,5 +48,6 @@ def viz_attention(words, attention):
                         yield {'src': y, 'dst': z, 'head': x, 'weight': attention[x,y,z]}
 
     dat = {'words': pd.DataFrame({'word': words, 'pos': range(len(words))}), 'attention': pd.DataFrame(attention_to_elements(attention))}
+    return dat
 
-    viz('attention.vg.json', dat)
+    #viz('attention.vg.json', dat)
