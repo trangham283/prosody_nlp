@@ -1,0 +1,10 @@
+# requirements inherited from the self-attentive parser code
+python>=3.6
+pytorch>=0.4
+cython>=0.25.2
+
+# needed for ELMo
+allennlp==0.7.0
+
+# needed for BERT
+pytorch-pretrained-bert==0.4.0
