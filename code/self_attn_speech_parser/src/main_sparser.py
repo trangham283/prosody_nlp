@@ -166,7 +166,7 @@ def run_train(args, hparams):
             args.train_sent_id_path)
 
     print("Processing pause features for training...")
-    pause_path = os.path.join(args.feature_path, 'train_pause.pickle')
+    pause_path = os.path.join(args.feature_path, args.prefix + 'train_pause.pickle')
     with open(pause_path, 'rb') as f:
         pause_data = pickle.load(f, encoding='latin1')
 
@@ -190,7 +190,8 @@ def run_train(args, hparams):
     print("Loading development trees from {}...".format(args.dev_path))
     dev_treebank, dev_sent_ids = trees.load_trees_with_idx(args.dev_path, \
             args.dev_sent_id_path)
-    dev_pause_path = os.path.join(args.feature_path, 'dev_pause.pickle')
+    dev_pause_path = os.path.join(args.feature_path, args.prefix + \
+            'dev_pause.pickle')
     with open(dev_pause_path, 'rb') as f:
         dev_pause_data = pickle.load(f, encoding='latin1')
     to_remove = set(dev_sent_ids).difference(set(dev_pause_data.keys()))
@@ -294,7 +295,7 @@ def run_train(args, hparams):
         for feat_type in speech_features:
             print("\t", feat_type)
             feat_path = os.path.join(args.feature_path, \
-                    'train_' + feat_type + '.pickle')
+                    args.prefix + 'train_' + feat_type + '.pickle')
             with open(feat_path, 'rb') as f:
                 feat_data = pickle.load(f, encoding='latin1')
             feat_dict[feat_type] = feat_data
@@ -306,7 +307,7 @@ def run_train(args, hparams):
         for feat_type in speech_features:
             print("\t", feat_type)
             feat_path = os.path.join(args.feature_path, \
-                    'dev_' + feat_type + '.pickle')
+                    args.prefix + 'dev_' + feat_type + '.pickle')
             with open(feat_path, 'rb') as f:
                 feat_data = pickle.load(f, encoding='latin1')
             dev_feat_dict[feat_type] = feat_data
@@ -816,6 +817,7 @@ def main():
     subparser.add_argument("--dev-sent-id-path", \
       default="/Users/trangtran/Misc/data/swbd_trees/dev_sent_ids.txt")
     subparser.add_argument("--load-path", type=str, default=None)
+    subparser.add_argument("--prefix", type=str, default='')
     subparser.add_argument("--optimizer", type=str, default='adam')
     subparser.add_argument("--speech-features", type=str, default=None)
     subparser.add_argument("--batch-size", type=int, default=250)
